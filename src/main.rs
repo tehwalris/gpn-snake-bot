@@ -7,6 +7,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Add;
 use std::{
@@ -29,6 +30,15 @@ impl Direction {
             Direction::Right => (pos.0 + 1, pos.1),
             Direction::Down => (pos.0, pos.1 + 1),
             Direction::Left => (pos.0 - 1, pos.1),
+        }
+    }
+
+    fn reverse(&self) -> Direction {
+        match self {
+            Direction::Up => Direction::Down,
+            Direction::Right => Direction::Left,
+            Direction::Down => Direction::Up,
+            Direction::Left => Direction::Right,
         }
     }
 }
@@ -298,6 +308,60 @@ impl Strategy for WeightedRandomStrategy {
     }
 }
 
+struct DFSStrategy {
+    added_positions: HashSet<(i32, i32)>,
+    stack: Vec<(i32, i32)>,
+    path_from_root: Vec<Direction>,
+}
+
+impl Strategy for DFSStrategy {
+    fn start(goal: (i32, i32)) -> Self {
+        Self {
+            added_positions: HashSet::new(),
+            stack: Vec::new(),
+            path_from_root: Vec::new(),
+        }
+    }
+
+    fn step(&mut self, old_pos: PosWithWalls) -> Result<Direction> {
+        let possible_dirs = old_pos.possible_dirs();
+        let old_pos = (old_pos.x, old_pos.y);
+
+        self.added_positions.insert(old_pos); // for the initial cell
+        for d in &possible_dirs {
+            let new_pos = d.offset(old_pos);
+            if !self.added_positions.contains(&new_pos) {
+                self.added_positions.insert(new_pos);
+                self.stack.push(new_pos);
+            }
+        }
+
+        let target_new_pos = self
+            .stack
+            .last()
+            .ok_or(anyhow!("nothing left to explore"))?;
+        let target_direction = possible_dirs
+            .iter()
+            .find(|d| d.offset(old_pos) == *target_new_pos)
+            .cloned();
+
+        if let Some(target_direction) = target_direction {
+            println!("DEBUG forward");
+            self.stack.pop();
+            self.path_from_root.push(target_direction);
+            Ok(target_direction)
+        } else {
+            println!("DEBUG back");
+            let back_direction = self
+                .path_from_root
+                .pop()
+                .ok_or(anyhow!("nothing left to backtrack"))?
+                .reverse();
+            Ok(back_direction)
+        }
+    }
+}
+
 fn run_round<R: Read, W: Write, S: Strategy>(
     reader: &mut GameReader<R>,
     writer: &mut GameWriter<W>,
@@ -363,6 +427,6 @@ fn main() -> Result<()> {
     writer.write(&ClientMessage::Join { username, password })?;
 
     loop {
-        run_round::<_, _, WeightedRandomStrategy>(&mut reader, &mut writer)?;
+        run_round::<_, _, DFSStrategy>(&mut reader, &mut writer)?;
     }
 }
