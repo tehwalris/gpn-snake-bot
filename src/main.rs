@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
 use float_ord::FloatOrd;
+use rand::distributions::Uniform;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
@@ -334,8 +335,11 @@ impl Strategy for DFSStrategy {
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
         // reverse because this will be reversed again when pushing onto the stack
-        possible_dirs.sort_by_key(|d| {
-            std::cmp::Reverse(FloatOrd(euclidean_distance(d.offset(old_pos), self.goal)))
+        possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
+            std::cmp::Reverse(FloatOrd(
+                euclidean_distance(d.offset(old_pos), self.goal)
+                    * Uniform::new(0.7, 1.0).sample(&mut thread_rng()),
+            ))
         });
 
         self.added_positions.insert(old_pos); // for the initial cell
