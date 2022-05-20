@@ -429,27 +429,30 @@ fn run_round<R: Read, W: Write, S: Strategy>(
     }
 }
 
+fn try_play(username: String, password: String) -> Result<()> {
+    let stream = TcpStream::connect("94.45.241.27:4000")?;
+    let mut reader = GameReader::new(&stream);
+    let mut writer = GameWriter::new(&stream);
+
+    writer.write(&ClientMessage::Join {
+        username: username.clone(),
+        password: password.clone(),
+    })?;
+
+    run_round::<_, _, DFSStrategy>(&mut reader, &mut writer)?;
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
     let password = std::env::var("GPN_MAZING_PASSWORD").expect("GPN_MAZING_PASSWORD is not set");
 
-    let mut result;
     loop {
-        result = Ok(());
-
-        let stream = TcpStream::connect("94.45.241.27:4000")?;
-        let mut reader = GameReader::new(&stream);
-        let mut writer = GameWriter::new(&stream);
-
-        writer.write(&ClientMessage::Join {
-            username: username.clone(),
-            password: password.clone(),
-        })?;
-
-        while result.is_ok() {
-            result = run_round::<_, _, DFSStrategy>(&mut reader, &mut writer);
-        }
-
-        println!("restarting due to error: {:?}", result);
+        println!(
+            "restarting due to error: {:?}",
+            try_play(username.clone(), password.clone())
+        );
+        std::thread::sleep(time::Duration::from_millis(200));
     }
 }
