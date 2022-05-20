@@ -1,6 +1,8 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::fmt;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
@@ -184,6 +186,36 @@ impl Strategy for FirstPossibleStrategy {
     }
 }
 
+struct RandomPossibleStrategy {}
+
+impl Strategy for RandomPossibleStrategy {
+    fn start(_goal: (i32, i32)) -> Self {
+        Self {}
+    }
+
+    fn step(&mut self, pos: PosWithWalls) -> Result<Direction> {
+        let mut possible_dirs = Vec::new();
+        if !pos.top {
+            possible_dirs.push(Direction::Up);
+        }
+        if !pos.right {
+            possible_dirs.push(Direction::Right);
+        }
+        if !pos.bottom {
+            possible_dirs.push(Direction::Down);
+        }
+        if !pos.left {
+            possible_dirs.push(Direction::Left);
+        }
+
+        if let Some(&dir) = possible_dirs.choose(&mut thread_rng()) {
+            Ok(dir)
+        } else {
+            Err(anyhow!("no valid direction to move"))
+        }
+    }
+}
+
 fn run_round<R: Read, W: Write, S: Strategy>(
     reader: &mut GameReader<R>,
     writer: &mut GameWriter<W>,
@@ -249,8 +281,6 @@ fn main() -> Result<()> {
     writer.write(&ClientMessage::Join { username, password })?;
 
     loop {
-        run_round::<_, _, FirstPossibleStrategy>(&mut reader, &mut writer)?;
+        run_round::<_, _, RandomPossibleStrategy>(&mut reader, &mut writer)?;
     }
-
-    Ok(())
 }
