@@ -5,6 +5,7 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::ops::Add;
@@ -231,6 +232,7 @@ fn manhattan_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
 struct WeightedRandomStrategy {
     goal: (i32, i32),
     visited_positions: HashSet<(i32, i32)>,
+    entry_by_position: HashMap<(i32, i32), (i32, i32)>,
 }
 
 impl WeightedRandomStrategy {
@@ -252,6 +254,7 @@ impl Strategy for WeightedRandomStrategy {
         Self {
             goal,
             visited_positions: HashSet::new(),
+            entry_by_position: HashMap::new(),
         }
     }
 
@@ -266,13 +269,17 @@ impl Strategy for WeightedRandomStrategy {
                 let mut w = 1.0;
 
                 match self.estimate_progress(old_pos, new_pos) {
-                    ProgressTowardsGoal::Closer => w *= 2.0,
+                    ProgressTowardsGoal::Closer => w *= 1.2,
                     ProgressTowardsGoal::Same => (),
-                    ProgressTowardsGoal::Further => w *= 0.5,
+                    ProgressTowardsGoal::Further => w *= 0.9,
                 }
 
-                if self.visited_positions.contains(&new_pos) {
-                    w *= 0.5;
+                if !self.visited_positions.contains(&new_pos) {
+                    w *= 4.0;
+                }
+
+                if self.entry_by_position.get(&old_pos).cloned() == Some(new_pos) {
+                    w *= 1.7;
                 }
 
                 w
@@ -281,7 +288,12 @@ impl Strategy for WeightedRandomStrategy {
 
         let chosen_dir = possible_dirs[WeightedIndex::new(weights)?.sample(&mut thread_rng())];
         let new_pos = chosen_dir.offset(old_pos);
+
         self.visited_positions.insert(new_pos);
+        if !self.entry_by_position.contains_key(&new_pos) {
+            self.entry_by_position.insert(new_pos, old_pos);
+        }
+
         Ok(chosen_dir)
     }
 }
