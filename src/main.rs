@@ -1,17 +1,21 @@
+#![allow(dead_code)]
+
 use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
 use float_ord::FloatOrd;
+use image::ImageBuffer;
+use image::Luma;
 use rand::distributions::Uniform;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::fmt;
-use std::ops::Add;
+use std::fs::File;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -56,7 +60,7 @@ impl fmt::Display for Direction {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PosWithWalls {
     x: i32,
     y: i32,
@@ -197,7 +201,7 @@ impl<W: Write> GameWriter<W> {
 
 trait Strategy: Sized {
     fn start(goal: (i32, i32)) -> Self;
-    fn step(&mut self, pos: PosWithWalls) -> Result<Direction>;
+    fn step(&mut self, pos: &PosWithWalls) -> Result<Direction>;
 }
 
 struct FirstPossibleStrategy {}
@@ -207,7 +211,7 @@ impl Strategy for FirstPossibleStrategy {
         Self {}
     }
 
-    fn step(&mut self, pos: PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         pos.possible_dirs()
             .first()
             .cloned()
@@ -222,7 +226,7 @@ impl Strategy for RandomPossibleStrategy {
         Self {}
     }
 
-    fn step(&mut self, pos: PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         if let Some(&dir) = pos.possible_dirs().choose(&mut thread_rng()) {
             Ok(dir)
         } else {
@@ -274,7 +278,7 @@ impl Strategy for WeightedRandomStrategy {
         }
     }
 
-    fn step(&mut self, old_pos: PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
 
@@ -319,6 +323,7 @@ struct DFSStrategy {
     added_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
+    distances: HashMap<(i32, i32), i32>,
 }
 
 impl Strategy for DFSStrategy {
@@ -328,10 +333,11 @@ impl Strategy for DFSStrategy {
             added_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
+            distances: HashMap::new(),
         }
     }
 
-    fn step(&mut self, old_pos: PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
         // reverse because this will be reversed again when pushing onto the stack
@@ -341,6 +347,9 @@ impl Strategy for DFSStrategy {
                     + Uniform::new(0.0, 0.85).sample(&mut thread_rng()),
             ))
         });
+
+        self.distances
+            .insert(old_pos, self.path_from_root.len() as i32);
 
         self.added_positions.insert(old_pos); // for the initial cell
         for d in &possible_dirs {
@@ -402,7 +411,7 @@ fn run_round<R: Read, W: Write, S: Strategy>(
 
     loop {
         let old_pos = pos.unwrap();
-        let direction = strategy.step(old_pos.clone())?;
+        let direction = strategy.step(&old_pos)?;
         println!("moving {}", direction);
         writer.write(&ClientMessage::Move { direction })?;
 
@@ -444,7 +453,7 @@ fn try_play(username: String, password: String) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn run_online() -> Result<()> {
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
     let password = std::env::var("GPN_MAZING_PASSWORD").expect("GPN_MAZING_PASSWORD is not set");
 
@@ -455,4 +464,84 @@ fn main() -> Result<()> {
         );
         std::thread::sleep(time::Duration::from_millis(200));
     }
+}
+
+type OfflineMaze = Vec<PosWithWalls>;
+
+fn calculate_maze_size(maze: &OfflineMaze) -> (i32, i32) {
+    let max = maze.iter().map(|p| (p.x, p.y)).max().unwrap();
+    let size = (max.0 + 1, max.1 + 1);
+    assert!(maze.len() == (size.0 * size.1) as usize);
+    size
+}
+
+fn run_offline() -> Result<()> {
+    let mazes: Vec<OfflineMaze> = serde_json::from_reader(File::open("mazes/mazes.json")?)?;
+    println!("loaded {} mazes", mazes.len());
+
+    let mut size = None;
+    for maze in &mazes {
+        let this_size = calculate_maze_size(maze);
+        assert!(size.is_none() || size == Some(this_size));
+        size = Some(this_size);
+    }
+    let size = size.unwrap();
+
+    let mut distances_sum = vec![0; (size.0 * size.1) as usize];
+
+    for (i, maze) in mazes.iter().enumerate() {
+        println!("maze {}", i);
+
+        let inputs_by_position: HashMap<_, _> = maze
+            .iter()
+            .map(|input| ((input.x, input.y), input.clone()))
+            .collect();
+
+        let goal = maze.iter().map(|p| (p.x, p.y)).max().unwrap();
+        let mut strategy = DFSStrategy::start(goal);
+        let mut pos = (0, 0);
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            match strategy.step(&inputs_by_position[&pos]) {
+                Ok(dir) => pos = dir.offset(pos),
+                Err(_) => break,
+            }
+        }
+
+        println!(
+            "max distance: {}",
+            strategy.distances.values().max().unwrap()
+        );
+
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                distances_sum[(size.0 * y + x) as usize] +=
+                    *strategy.distances.get(&(x, y)).unwrap();
+            }
+        }
+    }
+
+    let distances_mean: Vec<_> = distances_sum
+        .into_iter()
+        .map(|v| (v as f32) / (mazes.len() as f32))
+        .collect();
+
+    let max_distances_mean = *distances_mean.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
+    let debug_img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
+        size.0 as u32,
+        size.1 as u32,
+        distances_mean
+            .iter()
+            .map(|v| (v / max_distances_mean * 255.0) as u8)
+            .collect(),
+    )
+    .ok_or(anyhow!("failed to create image"))?;
+    debug_img.save("output/distances_mean.png")?;
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    run_offline()
 }

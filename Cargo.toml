@@ -7,3 +7,6 @@ edition = "2021"
 anyhow = "1.0"
 rand = "0.8.5"
 float-ord = "0.3.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.81"
+image = "0.24.2"

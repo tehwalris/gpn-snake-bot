@@ -11,8 +11,9 @@ const mazeCount = 50;
 const outputPath = path.join(__dirname, "../mazes/mazes.json");
 
 const mazes = [];
-for (let i = 0; i < 50; i++) {
-  mazes.push(generateMaze(25, 25, true, i));
+for (let i = 0; i < 300; i++) {
+  const maze = generateMaze(25, 25, true, i).flat();
+  mazes.push(maze);
 }
 
 fs.writeFileSync(outputPath, JSON.stringify(mazes));
