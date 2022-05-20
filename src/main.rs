@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
+use float_ord::FloatOrd;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
@@ -239,6 +240,10 @@ fn manhattan_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
     (a.0 - b.0).abs() + (a.1 - b.1).abs()
 }
 
+fn euclidean_distance(a: (i32, i32), b: (i32, i32)) -> f32 {
+    f32::sqrt(f32::powi(a.0 as f32 - b.0 as f32, 2) + f32::powi(a.1 as f32 - b.1 as f32, 2))
+}
+
 struct WeightedRandomStrategy {
     goal: (i32, i32),
     visited_positions: HashSet<(i32, i32)>,
@@ -309,6 +314,7 @@ impl Strategy for WeightedRandomStrategy {
 }
 
 struct DFSStrategy {
+    goal: (i32, i32),
     added_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
@@ -317,6 +323,7 @@ struct DFSStrategy {
 impl Strategy for DFSStrategy {
     fn start(goal: (i32, i32)) -> Self {
         Self {
+            goal,
             added_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
@@ -324,8 +331,12 @@ impl Strategy for DFSStrategy {
     }
 
     fn step(&mut self, old_pos: PosWithWalls) -> Result<Direction> {
-        let possible_dirs = old_pos.possible_dirs();
+        let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
+        // reverse because this will be reversed again when pushing onto the stack
+        possible_dirs.sort_by_key(|d| {
+            std::cmp::Reverse(FloatOrd(euclidean_distance(d.offset(old_pos), self.goal)))
+        });
 
         self.added_positions.insert(old_pos); // for the initial cell
         for d in &possible_dirs {
@@ -346,12 +357,10 @@ impl Strategy for DFSStrategy {
             .cloned();
 
         if let Some(target_direction) = target_direction {
-            println!("DEBUG forward");
             self.stack.pop();
             self.path_from_root.push(target_direction);
             Ok(target_direction)
         } else {
-            println!("DEBUG back");
             let back_direction = self
                 .path_from_root
                 .pop()
