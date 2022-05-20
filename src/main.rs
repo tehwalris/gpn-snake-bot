@@ -338,7 +338,7 @@ impl Strategy for DFSStrategy {
         possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
             std::cmp::Reverse(FloatOrd(
                 euclidean_distance(d.offset(old_pos), self.goal)
-                    * Uniform::new(0.7, 1.0).sample(&mut thread_rng()),
+                    + Uniform::new(0.0, 0.5).sample(&mut thread_rng()),
             ))
         });
 
