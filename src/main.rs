@@ -1,5 +1,7 @@
 use anyhow::anyhow;
 use anyhow::Result;
+use core::time;
+use std::fmt;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -11,6 +13,17 @@ enum Direction {
     Right,
     Down,
     Left,
+}
+
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Direction::Up => "up",
+            Direction::Right => "right",
+            Direction::Down => "down",
+            Direction::Left => "left",
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -115,20 +128,72 @@ impl<R: Read> GameReader<R> {
     }
 }
 
+struct GameWriter<W: Write> {
+    inner: BufWriter<W>,
+}
+
+impl<W: Write> GameWriter<W> {
+    fn new(inner: W) -> GameWriter<W> {
+        GameWriter {
+            inner: BufWriter::new(inner),
+        }
+    }
+
+    fn write(&mut self, message: &ClientMessage) -> Result<()> {
+        self.inner.write(Self::encode_message(message).as_bytes())?;
+        self.inner.flush()?;
+        Ok(())
+    }
+
+    fn encode_message(message: &ClientMessage) -> String {
+        match message {
+            ClientMessage::Join { username, password } => {
+                format!("join|{}|{}\n", username, password)
+            }
+            ClientMessage::Move { direction } => format!("move|{}\n", direction),
+            ClientMessage::Chat { message } => format!("chat|{}\n", message),
+        }
+    }
+}
+
+fn run_round<R: Read, W: Write>(
+    reader: &mut GameReader<R>,
+    writer: &mut GameWriter<W>,
+) -> Result<()> {
+    let mut goal: Option<(i32, i32)> = None;
+    let mut pos: Option<(i32, i32)> = None;
+    while goal.is_none() || pos.is_none() {
+        let msg = reader.read()?;
+        println!("{:?}", msg);
+
+        match msg {
+            ServerMessage::Motd { .. } => (),
+            ServerMessage::Error { .. } => return Ok(()),
+            ServerMessage::Goal { x, y } => goal = Some((x, y)),
+            ServerMessage::Pos { x, y, .. } => pos = Some((x, y)),
+            ServerMessage::Win { .. } => return Ok(()),
+            ServerMessage::Lose { .. } => return Ok(()),
+        };
+    }
+
+    println!("starting round (goal: {:?}, pos: {:?})", goal, pos);
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
     let password = std::env::var("GPN_MAZING_PASSWORD").expect("GPN_MAZING_PASSWORD is not set");
 
     let stream = TcpStream::connect("94.45.241.27:4000")?;
     let mut reader = GameReader::new(&stream);
-    let mut writer = BufWriter::new(&stream);
+    let mut writer = GameWriter::new(&stream);
 
-    println!("{:?}", reader.read()?);
+    writer.write(&ClientMessage::Join { username, password })?;
 
-    writer.write(b"test\n")?;
-    writer.flush()?;
+    run_round(&mut reader, &mut writer)?;
 
-    println!("{:?}", reader.read()?);
+    std::thread::sleep(time::Duration::from_secs(1));
 
     Ok(())
 }
