@@ -430,7 +430,7 @@ fn run_round<R: Read, W: Write, S: Strategy>(
 }
 
 fn try_play(username: String, password: String) -> Result<()> {
-    let stream = TcpStream::connect("94.45.241.27:4000")?;
+    let stream = TcpStream::connect("gpn-mazing.v6.rocks:4000")?;
     let mut reader = GameReader::new(&stream);
     let mut writer = GameWriter::new(&stream);
 
