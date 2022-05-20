@@ -1,9 +1,13 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
+use rand::distributions::WeightedIndex;
+use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use std::collections::HashSet;
 use std::fmt;
+use std::ops::Add;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -47,6 +51,25 @@ struct PosWithWalls {
     right: bool,
     bottom: bool,
     left: bool,
+}
+
+impl PosWithWalls {
+    fn possible_dirs(&self) -> Vec<Direction> {
+        let mut possible_dirs = Vec::new();
+        if !self.top {
+            possible_dirs.push(Direction::Up);
+        }
+        if !self.right {
+            possible_dirs.push(Direction::Right);
+        }
+        if !self.bottom {
+            possible_dirs.push(Direction::Down);
+        }
+        if !self.left {
+            possible_dirs.push(Direction::Left);
+        }
+        possible_dirs
+    }
 }
 
 #[derive(Debug)]
@@ -172,17 +195,10 @@ impl Strategy for FirstPossibleStrategy {
     }
 
     fn step(&mut self, pos: PosWithWalls) -> Result<Direction> {
-        if !pos.top {
-            return Ok(Direction::Up);
-        } else if !pos.right {
-            return Ok(Direction::Right);
-        } else if !pos.bottom {
-            return Ok(Direction::Down);
-        } else if !pos.left {
-            return Ok(Direction::Left);
-        } else {
-            return Err(anyhow!("no valid direction to move"));
-        }
+        pos.possible_dirs()
+            .first()
+            .cloned()
+            .ok_or(anyhow!("no valid direction to move"))
     }
 }
 
@@ -194,25 +210,79 @@ impl Strategy for RandomPossibleStrategy {
     }
 
     fn step(&mut self, pos: PosWithWalls) -> Result<Direction> {
-        let mut possible_dirs = Vec::new();
-        if !pos.top {
-            possible_dirs.push(Direction::Up);
-        }
-        if !pos.right {
-            possible_dirs.push(Direction::Right);
-        }
-        if !pos.bottom {
-            possible_dirs.push(Direction::Down);
-        }
-        if !pos.left {
-            possible_dirs.push(Direction::Left);
-        }
-
-        if let Some(&dir) = possible_dirs.choose(&mut thread_rng()) {
+        if let Some(&dir) = pos.possible_dirs().choose(&mut thread_rng()) {
             Ok(dir)
         } else {
             Err(anyhow!("no valid direction to move"))
         }
+    }
+}
+
+enum ProgressTowardsGoal {
+    Closer,
+    Same,
+    Further,
+}
+
+fn manhattan_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
+    (a.0 - b.0).abs() + (a.1 - b.1).abs()
+}
+
+struct WeightedRandomStrategy {
+    goal: (i32, i32),
+    visited_positions: HashSet<(i32, i32)>,
+}
+
+impl WeightedRandomStrategy {
+    fn estimate_progress(&self, old_pos: (i32, i32), new_pos: (i32, i32)) -> ProgressTowardsGoal {
+        let old_dist = manhattan_distance(old_pos, self.goal);
+        let new_dist = manhattan_distance(new_pos, self.goal);
+        if new_dist < old_dist {
+            return ProgressTowardsGoal::Closer;
+        } else if new_dist > old_dist {
+            return ProgressTowardsGoal::Further;
+        } else {
+            return ProgressTowardsGoal::Same;
+        }
+    }
+}
+
+impl Strategy for WeightedRandomStrategy {
+    fn start(goal: (i32, i32)) -> Self {
+        Self {
+            goal,
+            visited_positions: HashSet::new(),
+        }
+    }
+
+    fn step(&mut self, old_pos: PosWithWalls) -> Result<Direction> {
+        let possible_dirs = old_pos.possible_dirs();
+        let old_pos = (old_pos.x, old_pos.y);
+
+        let weights: Vec<f32> = possible_dirs
+            .iter()
+            .map(|d| {
+                let new_pos = d.offset(old_pos);
+                let mut w = 1.0;
+
+                match self.estimate_progress(old_pos, new_pos) {
+                    ProgressTowardsGoal::Closer => w *= 2.0,
+                    ProgressTowardsGoal::Same => (),
+                    ProgressTowardsGoal::Further => w *= 0.5,
+                }
+
+                if self.visited_positions.contains(&new_pos) {
+                    w *= 0.5;
+                }
+
+                w
+            })
+            .collect::<Vec<_>>();
+
+        let chosen_dir = possible_dirs[WeightedIndex::new(weights)?.sample(&mut thread_rng())];
+        let new_pos = chosen_dir.offset(old_pos);
+        self.visited_positions.insert(new_pos);
+        Ok(chosen_dir)
     }
 }
 
@@ -281,6 +351,6 @@ fn main() -> Result<()> {
     writer.write(&ClientMessage::Join { username, password })?;
 
     loop {
-        run_round::<_, _, RandomPossibleStrategy>(&mut reader, &mut writer)?;
+        run_round::<_, _, WeightedRandomStrategy>(&mut reader, &mut writer)?;
     }
 }
