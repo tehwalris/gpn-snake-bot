@@ -560,10 +560,6 @@ fn determine_reachable(
 struct ImprovedDFSStrategy<'a> {
     goal: (i32, i32),
     inputs: HashMap<(i32, i32), PosWithWalls>,
-    added_positions: HashSet<(i32, i32)>,
-    backtracked_positions: HashSet<(i32, i32)>,
-    stack: Vec<(i32, i32)>,
-    path_from_root: Vec<Direction>,
     estimated_size: (i32, i32),
     mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
 }
@@ -573,10 +569,6 @@ impl<'a> ImprovedDFSStrategy<'a> {
         Self {
             goal,
             inputs: HashMap::new(),
-            added_positions: HashSet::new(),
-            backtracked_positions: HashSet::new(),
-            stack: Vec::new(),
-            path_from_root: Vec::new(),
             estimated_size: (0, 0),
             mazes_by_size,
         }
@@ -598,7 +590,7 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             if let Some(mazes) = self.mazes_by_size.get(&(self.estimated_size.0 as usize)) {
                 mazes
                     .iter()
-                    .map(|mut maze| -> OfflineMaze {
+                    .map(|maze| -> OfflineMaze {
                         maze.iter()
                             .map(|p| self.inputs.get(&(p.x, p.y)).cloned().unwrap_or(p.clone()))
                             .collect()
@@ -619,112 +611,22 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         assert!(actual_size == self.estimated_size);
         save_debug_image("distances_mean", &distances, self.estimated_size)?;
 
-        let mut extended_inputs = extend_assuming_no_more_walls(&self.inputs, self.estimated_size);
-        let mut block_cell = |p: (i32, i32)| {
-            extended_inputs.insert(
-                old_pos,
-                PosWithWalls {
-                    x: p.0,
-                    y: p.1,
-                    top: true,
-                    right: true,
-                    bottom: true,
-                    left: true,
-                },
-            );
-            for d in [
-                Direction::Up,
-                Direction::Right,
-                Direction::Down,
-                Direction::Left,
-            ] {
-                extended_inputs
-                    .get_mut(&d.offset(p))
-                    .unwrap()
-                    .set_wall_in_dir(d.reverse(), true);
-            }
-        };
-        block_cell(old_pos);
-        {
-            let mut p = old_pos;
-            for d in self.path_from_root.iter().rev() {
-                p = d.reverse().offset(p);
-                block_cell(p);
-            }
-        }
-        for p in &self.backtracked_positions {
-            block_cell(*p);
-        }
-
-        let positions_that_can_reach_goal = determine_reachable(extended_inputs, self.goal);
-
-        let mut fake_image = vec![0.0; (self.estimated_size.0 * self.estimated_size.1) as usize];
-        for (x, y) in &positions_that_can_reach_goal {
-            fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
-        }
-        save_debug_image("left_to_explore", &fake_image, self.estimated_size)?;
-
-        possible_dirs = possible_dirs
-            .into_iter()
-            .filter(|d| {
-                let can_reach = positions_that_can_reach_goal.contains(&d.offset(old_pos));
-                if !can_reach {
-                    println!("ignoring unreachable direction: {:?}", d);
-                }
-                can_reach
-            })
-            .collect();
-
-        // reverse because this will be reversed again when pushing onto the stack
         possible_dirs.shuffle(&mut thread_rng());
-        possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
-            let p = d.offset(old_pos);
-            std::cmp::Reverse(FloatOrd(
-                distances
-                    .get((p.1 * self.estimated_size.0 + p.0) as usize)
-                    .cloned()
-                    .unwrap_or(f32::INFINITY),
-            ))
-        });
-
-        self.added_positions.insert(old_pos); // for the initial cell
-        for d in &possible_dirs {
-            let new_pos = d.offset(old_pos);
-            if !self.added_positions.contains(&new_pos) {
-                self.added_positions.insert(new_pos);
-                self.stack.push(new_pos);
-            }
-        }
-
-        while let Some(p) = self.stack.last() {
-            if positions_that_can_reach_goal.contains(p) {
-                break;
-            }
-            self.stack.pop();
-        }
-
-        let target_new_pos = self
-            .stack
-            .last()
-            .ok_or(anyhow!("nothing left to explore"))?;
-        let target_direction = possible_dirs
+        let best_dir = possible_dirs
             .iter()
-            .find(|d| d.offset(old_pos) == *target_new_pos)
-            .cloned();
+            .min_by_key(|d| -> FloatOrd<f32> {
+                let p = d.offset(old_pos);
+                FloatOrd(
+                    distances
+                        .get((p.1 * self.estimated_size.0 + p.0) as usize)
+                        .cloned()
+                        .unwrap_or(f32::INFINITY),
+                )
+            })
+            .unwrap()
+            .clone();
 
-        if let Some(target_direction) = target_direction {
-            self.stack.pop();
-            self.path_from_root.push(target_direction);
-            Ok(target_direction)
-        } else {
-            let back_direction = self
-                .path_from_root
-                .pop()
-                .ok_or(anyhow!("nothing left to backtrack"))?
-                .reverse();
-            self.backtracked_positions.insert(old_pos);
-            Ok(back_direction)
-        }
+        Ok(best_dir)
     }
 }
 
