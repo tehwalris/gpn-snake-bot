@@ -386,43 +386,36 @@ impl Strategy for DFSStrategy {
     }
 }
 
-struct ImprovedDFSStrategy {
+struct ImprovedDFSStrategy<'a> {
     goal: (i32, i32),
     added_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
-    original_distances: Vec<f32>,
-    original_distances_size: (i32, i32),
     scaled_distances: Vec<f32>,
     estimated_size: (i32, i32),
+    mazes: &'a Vec<OfflineMaze>,
 }
 
-impl ImprovedDFSStrategy {
-    fn new(goal: (i32, i32), distances: &Vec<f32>, distances_size: (i32, i32)) -> Self {
+impl<'a> ImprovedDFSStrategy<'a> {
+    fn new(goal: (i32, i32), mazes: &'a Vec<OfflineMaze>) -> Self {
         Self {
             goal,
             added_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
-            original_distances: distances.clone(),
-            original_distances_size: distances_size,
-            scaled_distances: distances.clone(),
-            estimated_size: distances_size,
+            scaled_distances: Vec::new(),
+            estimated_size: (0, 0),
+            mazes,
         }
     }
 
     fn estimate_distance(&self, pos: (i32, i32)) -> f32 {
-        assert!(self.goal == (0, 0));
         self.scaled_distances[(pos.1 * self.estimated_size.0 + pos.0) as usize]
     }
 }
 
-impl Strategy for ImprovedDFSStrategy {
+impl<'a> Strategy for ImprovedDFSStrategy<'a> {
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
-        if self.goal != (0, 0) {
-            return Err(anyhow!("unsupported goal"));
-        }
-
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
 
@@ -431,15 +424,25 @@ impl Strategy for ImprovedDFSStrategy {
             i32::max(old_pos.1 + 1, self.estimated_size.1),
         );
         if estimated_size != self.estimated_size {
+            println!("re-estimating distance map");
             self.estimated_size = estimated_size;
-            let original_distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
-                self.original_distances_size.0 as u32,
-                self.original_distances_size.1 as u32,
-                self.original_distances.clone(),
+            let (distances, distances_size) = run_offline(
+                self.mazes,
+                |goal| DFSStrategy::new(goal),
+                |s| Some(s.distances),
+                |_| self.goal,
+                |_| (0, 0),
+            )?
+            .unwrap();
+            save_distance_debug_image(&distances, distances_size)?;
+            let distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
+                distances_size.0 as u32,
+                distances_size.1 as u32,
+                distances.clone(),
             )
             .ok_or(anyhow!("failed to create image"))?;
             let scaled_distances = image::imageops::resize(
-                &original_distances,
+                &distances,
                 estimated_size.0 as u32,
                 estimated_size.1 as u32,
                 image::imageops::FilterType::Lanczos3,
@@ -541,13 +544,10 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
     }
 }
 
-fn try_play(
-    username: String,
-    password: String,
-    distances: &Vec<f32>,
-    distances_size: (i32, i32),
-) -> Result<()> {
-    let stream = TcpStream::connect("gpn-mazing.v6.rocks:4000")?;
+fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Result<()> {
+    println!("connecting");
+
+    let stream = TcpStream::connect("94.45.252.221:4000")?;
     let mut reader = GameReader::new(&stream);
     let mut writer = GameWriter::new(&stream);
 
@@ -557,7 +557,7 @@ fn try_play(
     })?;
 
     run_round(
-        |goal| ImprovedDFSStrategy::new(goal, distances, distances_size),
+        |goal| ImprovedDFSStrategy::new(goal, mazes),
         &mut reader,
         &mut writer,
     )?;
@@ -565,19 +565,14 @@ fn try_play(
     Ok(())
 }
 
-fn run_online(distances: &Vec<f32>, distances_size: (i32, i32)) -> Result<()> {
+fn run_online(mazes: &Vec<OfflineMaze>) -> Result<()> {
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
     let password = std::env::var("GPN_MAZING_PASSWORD").expect("GPN_MAZING_PASSWORD is not set");
 
     loop {
         println!(
             "restarting due to error: {:?}",
-            try_play(
-                username.clone(),
-                password.clone(),
-                distances,
-                distances_size,
-            )
+            try_play(username.clone(), password.clone(), mazes),
         );
         std::thread::sleep(time::Duration::from_millis(200));
     }
@@ -599,17 +594,14 @@ fn run_offline<
     FGetStartPos: Fn((i32, i32)) -> (i32, i32),
     FGetGoal: Fn((i32, i32)) -> (i32, i32),
 >(
+    mazes: &Vec<OfflineMaze>,
     make_strategy: FMakeStrategy,
     get_distances: FGetDistances,
     get_start_pos: FGetStartPos,
     get_goal: FGetGoal,
 ) -> Result<Option<(Vec<f32>, (i32, i32))>> {
-    let mazes: Vec<OfflineMaze> =
-        serde_json::from_reader(BufReader::new(File::open("mazes/mazes.json")?))?;
-    println!("loaded {} mazes", mazes.len());
-
     let mut size = None;
-    for maze in &mazes {
+    for maze in mazes {
         let this_size = calculate_maze_size(maze);
         assert!(size.is_none() || size == Some(this_size));
         size = Some(this_size);
@@ -619,7 +611,7 @@ fn run_offline<
     let mut distances_sum = None;
     let mut steps_until_goal_sum = 0;
 
-    for maze in &mazes {
+    for maze in mazes {
         let inputs_by_position: HashMap<_, _> = maze
             .iter()
             .map(|input| ((input.x, input.y), input.clone()))
@@ -673,40 +665,56 @@ fn run_offline<
     });
 
     if let Some(distances_mean) = distances_mean {
-        let max_distances_mean = *distances_mean.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
-        let debug_img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
-            size.0 as u32,
-            size.1 as u32,
-            distances_mean
-                .iter()
-                .map(|v| (v / max_distances_mean * 255.0) as u8)
-                .collect(),
-        )
-        .ok_or(anyhow!("failed to create image"))?;
-        debug_img.save("output/distances_mean.png")?;
-
+        save_distance_debug_image(&distances_mean, size)?;
         Ok(Some((distances_mean, size)))
     } else {
         Ok(None)
     }
 }
 
+fn save_distance_debug_image(distances_mean: &Vec<f32>, size: (i32, i32)) -> Result<()> {
+    let max_distances_mean = *distances_mean.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
+    let debug_img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
+        size.0 as u32,
+        size.1 as u32,
+        distances_mean
+            .iter()
+            .map(|v| (v / max_distances_mean * 255.0) as u8)
+            .collect(),
+    )
+    .ok_or(anyhow!("failed to create image"))?;
+    debug_img.save("output/distances_mean.png")?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
-    let (distances, distances_size) = run_offline(
-        |goal| DFSStrategy::new(goal),
-        |s| Some(s.distances),
-        |_| (0, 0),
-        |p| p,
-    )?
-    .unwrap();
-    let _ = run_offline(|goal| DFSStrategy::new(goal), |_| None, |p| p, |_| (0, 0))?;
-    let _ = run_offline(
-        |goal| ImprovedDFSStrategy::new(goal, &distances, distances_size),
-        |_| None,
-        |p| p,
-        |_| (0, 0),
-    )?;
-    run_online(&distances, distances_size)?;
+    let mazes: Vec<OfflineMaze> =
+        serde_json::from_reader(BufReader::new(File::open("mazes/mazes.json")?))?;
+    println!("loaded {} mazes", mazes.len());
+
+    // let _ = run_offline(
+    //     &mazes,
+    //     |goal| DFSStrategy::new(goal),
+    //     |s| Some(s.distances),
+    //     |_| (0, 0),
+    //     |p| p,
+    // )?
+    // .unwrap();
+    // let _ = run_offline(
+    //     &mazes,
+    //     |goal| DFSStrategy::new(goal),
+    //     |_| None,
+    //     |p| p,
+    //     |_| (0, 0),
+    // )?;
+    // let _ = run_offline(
+    //     &mazes,
+    //     |goal| ImprovedDFSStrategy::new(goal, &mazes),
+    //     |_| None,
+    //     |p| p,
+    //     |_| (0, 0),
+    // )?;
+    run_online(&mazes)?;
 
     Ok(())
 }
