@@ -21,7 +21,7 @@ use std::{
     net::TcpStream,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Direction {
     Up,
     Right,
@@ -346,6 +346,7 @@ struct DFSStrategy {
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
     distances: HashMap<(i32, i32), i32>,
+    direction_on_entry: HashMap<(i32, i32), Direction>,
 }
 
 impl DFSStrategy {
@@ -356,6 +357,7 @@ impl DFSStrategy {
             stack: Vec::new(),
             path_from_root: Vec::new(),
             distances: HashMap::new(),
+            direction_on_entry: HashMap::new(),
         }
     }
 }
@@ -394,6 +396,9 @@ impl Strategy for DFSStrategy {
         if let Some(target_direction) = target_direction {
             self.stack.pop();
             self.path_from_root.push(target_direction);
+            let new_pos = target_direction.offset(old_pos);
+            assert!(!self.direction_on_entry.contains_key(&new_pos));
+            self.direction_on_entry.insert(new_pos, target_direction);
             Ok(target_direction)
         } else {
             let back_direction = self
@@ -408,7 +413,7 @@ impl Strategy for DFSStrategy {
 
 struct DistanceMapCache<'a> {
     mazes: &'a Vec<OfflineMaze>,
-    distances_by_goal: HashMap<(i32, i32), (Vec<f32>, (i32, i32))>,
+    distances_by_goal: HashMap<(i32, i32), (Vec<f32>, (i32, i32), DirectionOnEntryCounts)>,
 }
 
 impl<'a> DistanceMapCache<'a> {
@@ -422,15 +427,16 @@ impl<'a> DistanceMapCache<'a> {
     fn get_or_calculate<F: Fn((i32, i32)) -> (i32, i32)>(
         &mut self,
         get_goal: F,
-    ) -> &(Vec<f32>, (i32, i32)) {
+    ) -> &(Vec<f32>, (i32, i32), DirectionOnEntryCounts) {
         let size = calculate_maze_size(&self.mazes[0]);
         let goal = get_goal((size.0 - 1, size.1 - 1));
 
         if !self.distances_by_goal.contains_key(&goal) {
-            let (distances, actual_size) = run_offline(
+            let (distances, actual_size, direction_on_entry_counts) = run_offline(
                 self.mazes,
                 |goal| DFSStrategy::new(goal),
                 |s| Some(s.distances),
+                |s| Some(s.direction_on_entry),
                 |_| goal,
                 |_| (0, 0),
             )
@@ -439,7 +445,8 @@ impl<'a> DistanceMapCache<'a> {
             assert!(actual_size == size);
             let distances_max = *distances.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
             let distances = distances.into_iter().map(|v| v / distances_max).collect();
-            self.distances_by_goal.insert(goal, (distances, size));
+            self.distances_by_goal
+                .insert(goal, (distances, size, direction_on_entry_counts));
         }
 
         self.distances_by_goal.get(&goal).unwrap()
@@ -584,12 +591,13 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         if estimated_size != self.estimated_size {
             self.estimated_size = estimated_size;
             let mut distance_map_cache = self.distance_map_cache.lock().unwrap();
-            let (distances, distances_size) = distance_map_cache.get_or_calculate(|p| {
-                (
-                    self.goal.0 * p.0 / estimated_size.0,
-                    self.goal.1 * p.1 / estimated_size.1,
-                )
-            });
+            let (distances, distances_size, direction_on_entry_counts) = distance_map_cache
+                .get_or_calculate(|p| {
+                    (
+                        self.goal.0 * p.0 / estimated_size.0,
+                        self.goal.1 * p.1 / estimated_size.1,
+                    )
+                });
             let distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
                 distances_size.0 as u32,
                 distances_size.1 as u32,
@@ -815,19 +823,23 @@ fn calculate_maze_size(maze: &OfflineMaze) -> (i32, i32) {
     size
 }
 
+type DirectionOnEntryCounts = HashMap<(i32, i32, Direction), usize>;
+
 fn run_offline<
     S: Strategy,
     FMakeStrategy: Fn((i32, i32)) -> S,
     FGetDistances: Fn(S) -> Option<HashMap<(i32, i32), i32>>,
+    FGetDirectionOnEntry: Fn(S) -> Option<HashMap<(i32, i32), Direction>>,
     FGetStartPos: Fn((i32, i32)) -> (i32, i32),
     FGetGoal: Fn((i32, i32)) -> (i32, i32),
 >(
     mazes: &Vec<OfflineMaze>,
     make_strategy: FMakeStrategy,
     get_distances: FGetDistances,
+    get_direction_on_entry: FGetDirectionOnEntry,
     get_start_pos: FGetStartPos,
     get_goal: FGetGoal,
-) -> Result<Option<(Vec<f32>, (i32, i32))>> {
+) -> Result<Option<(Vec<f32>, (i32, i32), DirectionOnEntryCounts)>> {
     let mut size = None;
     for maze in mazes {
         let this_size = calculate_maze_size(maze);
@@ -837,6 +849,7 @@ fn run_offline<
     let size = size.unwrap();
 
     let mut distances_sum = None;
+    let mut direction_on_entry_counts: DirectionOnEntryCounts = HashMap::new();
     let mut steps_until_goal_sum = 0;
 
     for maze in mazes {
@@ -880,6 +893,13 @@ fn run_offline<
                 }
             }
         }
+
+        let direction_on_entry = get_direction_on_entry(strategy).unwrap_or(HashMap::new());
+        for (p, dir) in direction_on_entry {
+            *direction_on_entry_counts
+                .entry((p.0, p.1, dir))
+                .or_insert(0) += 1;
+        }
     }
 
     let steps_until_goal_mean = (steps_until_goal_sum as f32) / (mazes.len() as f32);
@@ -894,7 +914,7 @@ fn run_offline<
 
     if let Some(distances_mean) = distances_mean {
         save_distance_debug_image(&distances_mean, size)?;
-        Ok(Some((distances_mean, size)))
+        Ok(Some((distances_mean, size, direction_on_entry_counts)))
     } else {
         Ok(None)
     }
@@ -922,19 +942,21 @@ fn main() -> Result<()> {
 
     // let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
     //
-    // println!("DFSStrategy down");
-    // let _ = run_offline(
-    //     &mazes,
-    //     |goal| DFSStrategy::new(goal),
-    //     |s| Some(s.distances),
-    //     |_| (0, 0),
-    //     |p| p,
-    // )?
-    // .unwrap();
+    println!("DFSStrategy down");
+    let _ = run_offline(
+        &mazes,
+        |goal| DFSStrategy::new(goal),
+        |s| Some(s.distances),
+        |s| Some(s.direction_on_entry),
+        |_| (0, 0),
+        |p| p,
+    )?
+    .unwrap();
     // println!("DFSStrategy up");
     // let _ = run_offline(
     //     &mazes,
     //     |goal| DFSStrategy::new(goal),
+    //     |_| None,
     //     |_| None,
     //     |p| p,
     //     |_| (0, 0),
@@ -943,6 +965,7 @@ fn main() -> Result<()> {
     // let _ = run_offline(
     //     &mazes,
     //     |goal| ImprovedDFSStrategy::new(goal, &mazes, &distance_map_cache),
+    //     |_| None,
     //     |_| None,
     //     |p| p,
     //     |_| (0, 0),
