@@ -562,6 +562,7 @@ struct ImprovedDFSStrategy<'a> {
     inputs: HashMap<(i32, i32), PosWithWalls>,
     estimated_size: (i32, i32),
     mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
+    first_entry_directions: HashMap<(i32, i32), Direction>,
     old_old_pos: (i32, i32),
 }
 
@@ -572,6 +573,7 @@ impl<'a> ImprovedDFSStrategy<'a> {
             inputs: HashMap::new(),
             estimated_size: (0, 0),
             mazes_by_size,
+            first_entry_directions: HashMap::new(),
             old_old_pos: (-1, -1),
         }
     }
@@ -611,11 +613,71 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         .unwrap()
         .unwrap();
         assert!(actual_size == self.estimated_size);
-        save_debug_image("distances_mean", &distances, self.estimated_size)?;
+
+        let mut extended_inputs = extend_assuming_no_more_walls(&self.inputs, self.estimated_size);
+        let mut block_cell = |p: (i32, i32)| {
+            extended_inputs.insert(
+                old_pos,
+                PosWithWalls {
+                    x: p.0,
+                    y: p.1,
+                    top: true,
+                    right: true,
+                    bottom: true,
+                    left: true,
+                },
+            );
+            for d in [
+                Direction::Up,
+                Direction::Right,
+                Direction::Down,
+                Direction::Left,
+            ] {
+                extended_inputs
+                    .get_mut(&d.offset(p))
+                    .unwrap()
+                    .set_wall_in_dir(d.reverse(), true);
+            }
+        };
+        block_cell(old_pos);
+        for (&target, &d) in &self.first_entry_directions {
+            let source = d.reverse().offset(target);
+            let source_input = extended_inputs.get_mut(&source).unwrap();
+            source_input.set_wall_in_dir(d, true);
+        }
+
+        let positions_that_can_reach_goal = determine_reachable(extended_inputs, self.goal);
+
+        let mut debug_image = distances.clone();
+        {
+            let max = debug_image
+                .iter()
+                .max_by_key(|v| FloatOrd::<f32>(**v))
+                .unwrap()
+                .clone();
+            for v in &mut debug_image {
+                *v /= max;
+            }
+        }
+        for x in 0..self.estimated_size.0 {
+            for y in 0..self.estimated_size.1 {
+                if !positions_that_can_reach_goal.contains(&(x, y)) {
+                    debug_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
+                }
+            }
+        }
+        save_debug_image("debug", &debug_image, self.estimated_size)?;
 
         possible_dirs.shuffle(&mut thread_rng());
         let best_dir = possible_dirs
             .iter()
+            .filter(|d| {
+                let can_reach = positions_that_can_reach_goal.contains(&d.offset(old_pos));
+                if !can_reach {
+                    println!("ignoring unreachable direction: {:?}", d);
+                }
+                can_reach
+            })
             .min_by_key(|d| -> FloatOrd<f32> {
                 if d.offset(old_pos) == self.old_old_pos {
                     return FloatOrd(f32::INFINITY);
@@ -628,10 +690,16 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                         .unwrap_or(f32::INFINITY),
                 )
             })
-            .unwrap()
+            .cloned()
+            .unwrap_or_else(|| self.first_entry_directions.get(&old_pos).unwrap().reverse())
             .clone();
 
         self.old_old_pos = old_pos;
+
+        let new_pos = best_dir.offset(old_pos);
+        if !self.first_entry_directions.contains_key(&new_pos) {
+            self.first_entry_directions.insert(new_pos, best_dir);
+        }
 
         Ok(best_dir)
     }
@@ -852,7 +920,7 @@ fn save_debug_image(name: &str, values: &Vec<f32>, size: (i32, i32)) -> Result<(
 
 fn main() -> Result<()> {
     let mut mazes_by_size = HashMap::new();
-    for size in 10..30 {
+    for size in 10..40 {
         let mazes: Vec<OfflineMaze> = serde_json::from_reader(BufReader::new(File::open(
             format!("mazes/mazes_{}.json", size),
         )?))?;
