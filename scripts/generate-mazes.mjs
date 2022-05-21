@@ -12,7 +12,7 @@ const outputPath = path.join(__dirname, "../mazes/mazes.json");
 const seed_offset = 500;
 
 const mazes = [];
-for (let i = 0; i < 200; i++) {
+for (let i = 0; i < 500; i++) {
   const maze = generateMaze(25, 25, true, i + seed_offset).flat();
   mazes.push(maze);
 }

@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -386,6 +388,45 @@ impl Strategy for DFSStrategy {
     }
 }
 
+struct DistanceMapCache<'a> {
+    mazes: &'a Vec<OfflineMaze>,
+    distances_by_goal: HashMap<(i32, i32), (Vec<f32>, (i32, i32))>,
+}
+
+impl<'a> DistanceMapCache<'a> {
+    fn new(mazes: &'a Vec<OfflineMaze>) -> DistanceMapCache<'a> {
+        DistanceMapCache {
+            mazes,
+            distances_by_goal: HashMap::new(),
+        }
+    }
+
+    fn get_or_calculate<F: Fn((i32, i32)) -> (i32, i32)>(
+        &mut self,
+        get_goal: F,
+    ) -> &(Vec<f32>, (i32, i32)) {
+        let size = calculate_maze_size(&self.mazes[0]);
+        let goal = get_goal((size.0 - 1, size.1 - 1));
+
+        if !self.distances_by_goal.contains_key(&goal) {
+            let (distances, actual_size) = run_offline(
+                self.mazes,
+                |goal| DFSStrategy::new(goal),
+                |s| Some(s.distances),
+                |_| goal,
+                |_| (0, 0),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(actual_size == size);
+            self.distances_by_goal
+                .insert(goal, (distances.clone(), size));
+        }
+
+        self.distances_by_goal.get(&goal).unwrap()
+    }
+}
+
 struct ImprovedDFSStrategy<'a> {
     goal: (i32, i32),
     added_positions: HashSet<(i32, i32)>,
@@ -393,11 +434,11 @@ struct ImprovedDFSStrategy<'a> {
     path_from_root: Vec<Direction>,
     scaled_distances: Vec<f32>,
     estimated_size: (i32, i32),
-    mazes: &'a Vec<OfflineMaze>,
+    distance_map_cache: &'a Mutex<DistanceMapCache<'a>>,
 }
 
 impl<'a> ImprovedDFSStrategy<'a> {
-    fn new(goal: (i32, i32), mazes: &'a Vec<OfflineMaze>) -> Self {
+    fn new(goal: (i32, i32), distance_map_cache: &'a Mutex<DistanceMapCache<'a>>) -> Self {
         Self {
             goal,
             added_positions: HashSet::new(),
@@ -405,7 +446,7 @@ impl<'a> ImprovedDFSStrategy<'a> {
             path_from_root: Vec::new(),
             scaled_distances: Vec::new(),
             estimated_size: (0, 0),
-            mazes,
+            distance_map_cache,
         }
     }
 
@@ -424,17 +465,15 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             i32::max(old_pos.1 + 1, self.estimated_size.1),
         );
         if estimated_size != self.estimated_size {
-            println!("re-estimating distance map");
             self.estimated_size = estimated_size;
-            let (distances, distances_size) = run_offline(
-                self.mazes,
-                |goal| DFSStrategy::new(goal),
-                |s| Some(s.distances),
-                |_| self.goal,
-                |_| (0, 0),
-            )?
-            .unwrap();
-            save_distance_debug_image(&distances, distances_size)?;
+            let mut distance_map_cache = self.distance_map_cache.lock().unwrap();
+            let (distances, distances_size) = distance_map_cache.get_or_calculate(|p| {
+                (
+                    self.goal.0 * p.0 / estimated_size.0,
+                    self.goal.1 * p.1 / estimated_size.1,
+                )
+            });
+            save_distance_debug_image(distances, *distances_size)?;
             let distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
                 distances_size.0 as u32,
                 distances_size.1 as u32,
@@ -556,8 +595,10 @@ fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Res
         password: password.clone(),
     })?;
 
+    let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
+
     run_round(
-        |goal| ImprovedDFSStrategy::new(goal, mazes),
+        |goal| ImprovedDFSStrategy::new(goal, &distance_map_cache),
         &mut reader,
         &mut writer,
     )?;
@@ -692,28 +733,33 @@ fn main() -> Result<()> {
         serde_json::from_reader(BufReader::new(File::open("mazes/mazes.json")?))?;
     println!("loaded {} mazes", mazes.len());
 
-    // let _ = run_offline(
-    //     &mazes,
-    //     |goal| DFSStrategy::new(goal),
-    //     |s| Some(s.distances),
-    //     |_| (0, 0),
-    //     |p| p,
-    // )?
-    // .unwrap();
-    // let _ = run_offline(
-    //     &mazes,
-    //     |goal| DFSStrategy::new(goal),
-    //     |_| None,
-    //     |p| p,
-    //     |_| (0, 0),
-    // )?;
-    // let _ = run_offline(
-    //     &mazes,
-    //     |goal| ImprovedDFSStrategy::new(goal, &mazes),
-    //     |_| None,
-    //     |p| p,
-    //     |_| (0, 0),
-    // )?;
+    let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
+
+    println!("DFSStrategy down");
+    let _ = run_offline(
+        &mazes,
+        |goal| DFSStrategy::new(goal),
+        |s| Some(s.distances),
+        |_| (0, 0),
+        |p| p,
+    )?
+    .unwrap();
+    println!("DFSStrategy up");
+    let _ = run_offline(
+        &mazes,
+        |goal| DFSStrategy::new(goal),
+        |_| None,
+        |p| p,
+        |_| (0, 0),
+    )?;
+    println!("ImprovedDFSStrategy up");
+    let _ = run_offline(
+        &mazes,
+        |goal| ImprovedDFSStrategy::new(goal, &distance_map_cache),
+        |_| None,
+        |p| p,
+        |_| (0, 0),
+    )?;
     run_online(&mazes)?;
 
     Ok(())
