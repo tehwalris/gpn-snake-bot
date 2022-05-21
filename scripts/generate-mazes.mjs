@@ -11,7 +11,7 @@ const mazeCount = 50;
 const outputPath = path.join(__dirname, "../mazes/mazes.json");
 
 const mazes = [];
-for (let i = 0; i < 300; i++) {
+for (let i = 0; i < 500; i++) {
   const maze = generateMaze(25, 25, true, i).flat();
   mazes.push(maze);
 }

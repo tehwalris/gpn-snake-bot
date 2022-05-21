@@ -6,7 +6,6 @@ use core::time;
 use float_ord::FloatOrd;
 use image::ImageBuffer;
 use image::Luma;
-use rand::distributions::Uniform;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
@@ -200,17 +199,18 @@ impl<W: Write> GameWriter<W> {
 }
 
 trait Strategy: Sized {
-    fn start(goal: (i32, i32)) -> Self;
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction>;
 }
 
 struct FirstPossibleStrategy {}
 
-impl Strategy for FirstPossibleStrategy {
-    fn start(_goal: (i32, i32)) -> Self {
+impl FirstPossibleStrategy {
+    fn new(_goal: (i32, i32)) -> Self {
         Self {}
     }
+}
 
+impl Strategy for FirstPossibleStrategy {
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         pos.possible_dirs()
             .first()
@@ -221,11 +221,13 @@ impl Strategy for FirstPossibleStrategy {
 
 struct RandomPossibleStrategy {}
 
-impl Strategy for RandomPossibleStrategy {
-    fn start(_goal: (i32, i32)) -> Self {
+impl RandomPossibleStrategy {
+    fn new(_goal: (i32, i32)) -> Self {
         Self {}
     }
+}
 
+impl Strategy for RandomPossibleStrategy {
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         if let Some(&dir) = pos.possible_dirs().choose(&mut thread_rng()) {
             Ok(dir)
@@ -256,6 +258,14 @@ struct WeightedRandomStrategy {
 }
 
 impl WeightedRandomStrategy {
+    fn new(goal: (i32, i32)) -> Self {
+        Self {
+            goal,
+            visited_positions: HashSet::new(),
+            entry_by_position: HashMap::new(),
+        }
+    }
+
     fn estimate_progress(&self, old_pos: (i32, i32), new_pos: (i32, i32)) -> ProgressTowardsGoal {
         let old_dist = manhattan_distance(old_pos, self.goal);
         let new_dist = manhattan_distance(new_pos, self.goal);
@@ -270,14 +280,6 @@ impl WeightedRandomStrategy {
 }
 
 impl Strategy for WeightedRandomStrategy {
-    fn start(goal: (i32, i32)) -> Self {
-        Self {
-            goal,
-            visited_positions: HashSet::new(),
-            entry_by_position: HashMap::new(),
-        }
-    }
-
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
@@ -326,8 +328,8 @@ struct DFSStrategy {
     distances: HashMap<(i32, i32), i32>,
 }
 
-impl Strategy for DFSStrategy {
-    fn start(goal: (i32, i32)) -> Self {
+impl DFSStrategy {
+    fn new(goal: (i32, i32)) -> Self {
         Self {
             goal,
             added_positions: HashSet::new(),
@@ -336,16 +338,15 @@ impl Strategy for DFSStrategy {
             distances: HashMap::new(),
         }
     }
+}
 
+impl Strategy for DFSStrategy {
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
         // reverse because this will be reversed again when pushing onto the stack
         possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
-            std::cmp::Reverse(FloatOrd(
-                euclidean_distance(d.offset(old_pos), self.goal)
-                    + Uniform::new(0.0, 0.85).sample(&mut thread_rng()),
-            ))
+            std::cmp::Reverse(FloatOrd(euclidean_distance(d.offset(old_pos), self.goal)))
         });
 
         self.distances
@@ -384,7 +385,107 @@ impl Strategy for DFSStrategy {
     }
 }
 
-fn run_round<R: Read, W: Write, S: Strategy>(
+struct ImprovedDFSStrategy {
+    goal: (i32, i32),
+    added_positions: HashSet<(i32, i32)>,
+    stack: Vec<(i32, i32)>,
+    path_from_root: Vec<Direction>,
+    original_distances: Vec<f32>,
+    original_distances_size: (i32, i32),
+    scaled_distances: Vec<f32>,
+    estimated_size: (i32, i32),
+}
+
+impl ImprovedDFSStrategy {
+    fn new(goal: (i32, i32), distances: &Vec<f32>, distances_size: (i32, i32)) -> Self {
+        Self {
+            goal,
+            added_positions: HashSet::new(),
+            stack: Vec::new(),
+            path_from_root: Vec::new(),
+            original_distances: distances.clone(),
+            original_distances_size: distances_size,
+            scaled_distances: distances.clone(),
+            estimated_size: distances_size,
+        }
+    }
+
+    fn estimate_distance(&self, pos: (i32, i32)) -> f32 {
+        assert!(self.goal == (0, 0));
+        self.scaled_distances[(pos.1 * self.estimated_size.0 + pos.0) as usize]
+    }
+}
+
+impl Strategy for ImprovedDFSStrategy {
+    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
+        if self.goal != (0, 0) {
+            return Err(anyhow!("unsupported goal"));
+        }
+
+        let mut possible_dirs = old_pos.possible_dirs();
+        let old_pos = (old_pos.x, old_pos.y);
+
+        let estimated_size = (
+            i32::max(old_pos.0, self.estimated_size.0),
+            i32::max(old_pos.1, self.estimated_size.1),
+        );
+        if estimated_size != self.estimated_size {
+            self.estimated_size = estimated_size;
+            let original_distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
+                self.original_distances_size.0 as u32,
+                self.original_distances_size.1 as u32,
+                self.original_distances.clone(),
+            )
+            .ok_or(anyhow!("failed to create image"))?;
+            let scaled_distances = image::imageops::resize(
+                &original_distances,
+                estimated_size.0 as u32,
+                estimated_size.1 as u32,
+                image::imageops::FilterType::Lanczos3,
+            );
+            self.scaled_distances = scaled_distances.to_vec();
+        }
+
+        // reverse because this will be reversed again when pushing onto the stack
+        possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
+            std::cmp::Reverse(FloatOrd(self.estimate_distance(d.offset(old_pos))))
+        });
+
+        self.added_positions.insert(old_pos); // for the initial cell
+        for d in &possible_dirs {
+            let new_pos = d.offset(old_pos);
+            if !self.added_positions.contains(&new_pos) {
+                self.added_positions.insert(new_pos);
+                self.stack.push(new_pos);
+            }
+        }
+
+        let target_new_pos = self
+            .stack
+            .last()
+            .ok_or(anyhow!("nothing left to explore"))?;
+        let target_direction = possible_dirs
+            .iter()
+            .find(|d| d.offset(old_pos) == *target_new_pos)
+            .cloned();
+
+        if let Some(target_direction) = target_direction {
+            self.stack.pop();
+            self.path_from_root.push(target_direction);
+            Ok(target_direction)
+        } else {
+            let back_direction = self
+                .path_from_root
+                .pop()
+                .ok_or(anyhow!("nothing left to backtrack"))?
+                .reverse();
+            Ok(back_direction)
+        }
+    }
+}
+
+fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
+    make_strategy: F,
     reader: &mut GameReader<R>,
     writer: &mut GameWriter<W>,
 ) -> Result<()> {
@@ -407,7 +508,7 @@ fn run_round<R: Read, W: Write, S: Strategy>(
     }
 
     println!("starting round");
-    let mut strategy = S::start(goal.unwrap());
+    let mut strategy = make_strategy(goal.unwrap());
 
     loop {
         let old_pos = pos.unwrap();
@@ -438,7 +539,12 @@ fn run_round<R: Read, W: Write, S: Strategy>(
     }
 }
 
-fn try_play(username: String, password: String) -> Result<()> {
+fn try_play(
+    username: String,
+    password: String,
+    distances: &Vec<f32>,
+    distances_size: (i32, i32),
+) -> Result<()> {
     let stream = TcpStream::connect("gpn-mazing.v6.rocks:4000")?;
     let mut reader = GameReader::new(&stream);
     let mut writer = GameWriter::new(&stream);
@@ -448,19 +554,28 @@ fn try_play(username: String, password: String) -> Result<()> {
         password: password.clone(),
     })?;
 
-    run_round::<_, _, DFSStrategy>(&mut reader, &mut writer)?;
+    run_round(
+        |goal| ImprovedDFSStrategy::new(goal, distances, distances_size),
+        &mut reader,
+        &mut writer,
+    )?;
 
     Ok(())
 }
 
-fn run_online() -> Result<()> {
+fn run_online(distances: &Vec<f32>, distances_size: (i32, i32)) -> Result<()> {
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
     let password = std::env::var("GPN_MAZING_PASSWORD").expect("GPN_MAZING_PASSWORD is not set");
 
     loop {
         println!(
             "restarting due to error: {:?}",
-            try_play(username.clone(), password.clone())
+            try_play(
+                username.clone(),
+                password.clone(),
+                distances,
+                distances_size,
+            )
         );
         std::thread::sleep(time::Duration::from_millis(200));
     }
@@ -475,8 +590,20 @@ fn calculate_maze_size(maze: &OfflineMaze) -> (i32, i32) {
     size
 }
 
-fn run_offline() -> Result<()> {
-    let mazes: Vec<OfflineMaze> = serde_json::from_reader(File::open("mazes/mazes.json")?)?;
+fn run_offline<
+    S: Strategy,
+    FMakeStrategy: Fn((i32, i32)) -> S,
+    FGetDistances: Fn(S) -> Option<HashMap<(i32, i32), i32>>,
+    FGetStartPos: Fn((i32, i32)) -> (i32, i32),
+    FGetGoal: Fn((i32, i32)) -> (i32, i32),
+>(
+    make_strategy: FMakeStrategy,
+    get_distances: FGetDistances,
+    get_start_pos: FGetStartPos,
+    get_goal: FGetGoal,
+) -> Result<Option<(Vec<f32>, (i32, i32))>> {
+    let mazes: Vec<OfflineMaze> =
+        serde_json::from_reader(BufReader::new(File::open("mazes/mazes.json")?))?;
     println!("loaded {} mazes", mazes.len());
 
     let mut size = None;
@@ -487,61 +614,97 @@ fn run_offline() -> Result<()> {
     }
     let size = size.unwrap();
 
-    let mut distances_sum = vec![0; (size.0 * size.1) as usize];
+    let mut distances_sum = None;
+    let mut steps_until_goal_sum = 0;
 
-    for (i, maze) in mazes.iter().enumerate() {
-        println!("maze {}", i);
-
+    for maze in &mazes {
         let inputs_by_position: HashMap<_, _> = maze
             .iter()
             .map(|input| ((input.x, input.y), input.clone()))
             .collect();
 
-        let goal = maze.iter().map(|p| (p.x, p.y)).max().unwrap();
-        let mut strategy = DFSStrategy::start(goal);
-        let mut pos = (0, 0);
-        let mut steps = 0;
+        let max_pos = maze.iter().map(|p| (p.x, p.y)).max().unwrap();
+
+        let goal = get_goal(max_pos);
+        let mut goal_reached = false;
+        let mut strategy = make_strategy(goal);
+        let mut pos = get_start_pos(max_pos);
+        let mut steps_until_goal = 0;
         loop {
-            steps += 1;
+            if !goal_reached {
+                steps_until_goal += 1;
+            }
             match strategy.step(&inputs_by_position[&pos]) {
                 Ok(dir) => pos = dir.offset(pos),
                 Err(_) => break,
             }
+            if pos == goal {
+                goal_reached = true;
+            }
         }
 
-        println!(
-            "max distance: {}",
-            strategy.distances.values().max().unwrap()
-        );
+        steps_until_goal_sum += steps_until_goal;
 
-        for y in 0..size.1 {
-            for x in 0..size.0 {
-                distances_sum[(size.0 * y + x) as usize] +=
-                    *strategy.distances.get(&(x, y)).unwrap();
+        let distances = get_distances(strategy);
+        assert!(distances_sum.is_none() || distances.is_some());
+        if distances.is_some() {
+            distances_sum = Some(vec![0; (size.0 * size.1) as usize]);
+        }
+        if let Some(distances) = distances {
+            for y in 0..size.1 {
+                for x in 0..size.0 {
+                    distances_sum.as_deref_mut().unwrap()[(size.0 * y + x) as usize] +=
+                        distances.get(&(x, y)).unwrap();
+                }
             }
         }
     }
 
-    let distances_mean: Vec<_> = distances_sum
-        .into_iter()
-        .map(|v| (v as f32) / (mazes.len() as f32))
-        .collect();
+    let steps_until_goal_mean = (steps_until_goal_sum as f32) / (mazes.len() as f32);
+    println!("steps_until_goal_mean: {} ", steps_until_goal_mean);
 
-    let max_distances_mean = *distances_mean.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
-    let debug_img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
-        size.0 as u32,
-        size.1 as u32,
-        distances_mean
-            .iter()
-            .map(|v| (v / max_distances_mean * 255.0) as u8)
-            .collect(),
-    )
-    .ok_or(anyhow!("failed to create image"))?;
-    debug_img.save("output/distances_mean.png")?;
+    let distances_mean: Option<Vec<_>> = distances_sum.map(|distances_sum| {
+        distances_sum
+            .into_iter()
+            .map(|v| (v as f32) / (mazes.len() as f32))
+            .collect()
+    });
 
-    Ok(())
+    if let Some(distances_mean) = distances_mean {
+        let max_distances_mean = *distances_mean.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
+        let debug_img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
+            size.0 as u32,
+            size.1 as u32,
+            distances_mean
+                .iter()
+                .map(|v| (v / max_distances_mean * 255.0) as u8)
+                .collect(),
+        )
+        .ok_or(anyhow!("failed to create image"))?;
+        debug_img.save("output/distances_mean.png")?;
+
+        Ok(Some((distances_mean, size)))
+    } else {
+        Ok(None)
+    }
 }
 
 fn main() -> Result<()> {
-    run_offline()
+    let (distances, distances_size) = run_offline(
+        |goal| DFSStrategy::new(goal),
+        |s| Some(s.distances),
+        |_| (0, 0),
+        |p| p,
+    )?
+    .unwrap();
+    let _ = run_offline(|goal| DFSStrategy::new(goal), |_| None, |p| p, |_| (0, 0))?;
+    let _ = run_offline(
+        |goal| ImprovedDFSStrategy::new(goal, &distances, distances_size),
+        |_| None,
+        |p| p,
+        |_| (0, 0),
+    )?;
+    // run_online(&distances, distances_size)?;
+
+    Ok(())
 }
