@@ -595,9 +595,16 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                 mazes
                     .iter()
                     .map(|maze| -> OfflineMaze {
-                        maze.iter()
+                        let mut maze: OfflineMaze = maze
+                            .iter()
                             .map(|p| self.inputs.get(&(p.x, p.y)).cloned().unwrap_or(p.clone()))
-                            .collect()
+                            .collect();
+                        for (&target, &d) in &self.first_entry_directions {
+                            let source = d.reverse().offset(target);
+                            maze[(source.1 * self.estimated_size.0 + source.0) as usize]
+                                .set_wall_in_dir(d, true);
+                        }
+                        maze
                     })
                     .collect()
             } else {
