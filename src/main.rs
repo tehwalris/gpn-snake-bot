@@ -87,6 +87,25 @@ impl PosWithWalls {
         }
         possible_dirs
     }
+
+    fn get_wall_in_dir(&self, dir: Direction) -> bool {
+        match dir {
+            Direction::Up => self.top,
+            Direction::Right => self.right,
+            Direction::Down => self.bottom,
+            Direction::Left => self.left,
+        }
+    }
+
+    fn set_wall_in_dir(&mut self, dir: Direction, value: bool) {
+        let variable = match dir {
+            Direction::Up => &mut self.top,
+            Direction::Right => &mut self.right,
+            Direction::Down => &mut self.bottom,
+            Direction::Left => &mut self.left,
+        };
+        *variable = value;
+    }
 }
 
 #[derive(Debug)]
@@ -427,25 +446,116 @@ impl<'a> DistanceMapCache<'a> {
     }
 }
 
+fn extend_assuming_no_more_walls(
+    known_inputs: &HashMap<(i32, i32), PosWithWalls>,
+    size: (i32, i32),
+) -> HashMap<(i32, i32), PosWithWalls> {
+    let mut inputs = known_inputs.clone();
+
+    let mut add_fake_boundary_input = |x, y| {
+        inputs.insert(
+            (x, y),
+            PosWithWalls {
+                x,
+                y,
+                top: true,
+                right: true,
+                bottom: true,
+                left: true,
+            },
+        )
+    };
+    for x in -1..=size.0 {
+        add_fake_boundary_input(x, -1);
+        add_fake_boundary_input(x, size.1);
+    }
+    for y in -1..=size.0 {
+        add_fake_boundary_input(-1, y);
+        add_fake_boundary_input(size.0, y);
+    }
+
+    for x in 0..size.0 {
+        for y in 0..size.1 {
+            if inputs.contains_key(&(x, y)) {
+                continue;
+            }
+
+            let wall_from_neighbor = |d: Direction| match inputs.get(&d.offset((x, y))) {
+                Some(neighbor_input) => neighbor_input.get_wall_in_dir(d.reverse()),
+                None => false,
+            };
+
+            let mut fake_input = PosWithWalls {
+                x,
+                y,
+                top: false,
+                right: false,
+                bottom: false,
+                left: false,
+            };
+            for d in [
+                Direction::Up,
+                Direction::Right,
+                Direction::Down,
+                Direction::Left,
+            ] {
+                fake_input.set_wall_in_dir(d, wall_from_neighbor(d));
+            }
+
+            inputs.insert((x, y), fake_input);
+        }
+    }
+
+    inputs
+}
+
+fn determine_reachable(
+    inputs: HashMap<(i32, i32), PosWithWalls>,
+    start_pos: (i32, i32),
+) -> HashSet<(i32, i32)> {
+    let mut stack = Vec::new();
+    stack.push(start_pos);
+    let mut added = HashSet::new();
+    while let Some(pos) = stack.pop() {
+        for d in inputs.get(&pos).unwrap().possible_dirs() {
+            let new_pos = d.offset(pos);
+            if !added.contains(&new_pos) {
+                stack.push(new_pos);
+            }
+        }
+        added.insert(pos);
+    }
+
+    added
+}
+
 struct ImprovedDFSStrategy<'a> {
     goal: (i32, i32),
+    inputs: HashMap<(i32, i32), PosWithWalls>,
     added_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
     scaled_distances: Vec<f32>,
     estimated_size: (i32, i32),
+    mazes: &'a Vec<OfflineMaze>,
     distance_map_cache: &'a Mutex<DistanceMapCache<'a>>,
 }
 
 impl<'a> ImprovedDFSStrategy<'a> {
-    fn new(goal: (i32, i32), distance_map_cache: &'a Mutex<DistanceMapCache<'a>>) -> Self {
+    fn new(
+        goal: (i32, i32),
+        mazes: &'a Vec<OfflineMaze>,
+        distance_map_cache: &'a Mutex<DistanceMapCache<'a>>,
+    ) -> Self {
         Self {
             goal,
+            inputs: HashMap::new(),
             added_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
             scaled_distances: Vec::new(),
             estimated_size: (0, 0),
+            mazes,
             distance_map_cache,
         }
     }
@@ -458,6 +568,7 @@ impl<'a> ImprovedDFSStrategy<'a> {
 impl<'a> Strategy for ImprovedDFSStrategy<'a> {
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let mut possible_dirs = old_pos.possible_dirs();
+        self.inputs.insert((old_pos.x, old_pos.y), old_pos.clone());
         let old_pos = (old_pos.x, old_pos.y);
 
         let estimated_size = (
@@ -487,6 +598,30 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             );
             self.scaled_distances = scaled_distances.to_vec();
         }
+
+        let mut extended_inputs = extend_assuming_no_more_walls(&self.inputs, self.estimated_size);
+        extended_inputs.insert(
+            old_pos,
+            PosWithWalls {
+                x: old_pos.0,
+                y: old_pos.1,
+                top: true,
+                right: true,
+                bottom: true,
+                left: true,
+            },
+        );
+        let positions_that_can_reach_goal = determine_reachable(extended_inputs, self.goal);
+        possible_dirs = possible_dirs
+            .into_iter()
+            .filter(|d| {
+                let can_reach = positions_that_can_reach_goal.contains(&d.offset(old_pos));
+                if !can_reach {
+                    println!("ignoring unreachable direction: {:?}", d);
+                }
+                can_reach
+            })
+            .collect();
 
         // reverse because this will be reversed again when pushing onto the stack
         possible_dirs.shuffle(&mut thread_rng());
@@ -597,7 +732,7 @@ fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Res
     let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
 
     run_round(
-        |goal| ImprovedDFSStrategy::new(goal, &distance_map_cache),
+        |goal| ImprovedDFSStrategy::new(goal, &mazes, &distance_map_cache),
         &mut reader,
         &mut writer,
     )?;
@@ -734,31 +869,31 @@ fn main() -> Result<()> {
 
     let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
 
-    println!("DFSStrategy down");
-    let _ = run_offline(
-        &mazes,
-        |goal| DFSStrategy::new(goal),
-        |s| Some(s.distances),
-        |_| (0, 0),
-        |p| p,
-    )?
-    .unwrap();
-    println!("DFSStrategy up");
-    let _ = run_offline(
-        &mazes,
-        |goal| DFSStrategy::new(goal),
-        |_| None,
-        |p| p,
-        |_| (0, 0),
-    )?;
-    println!("ImprovedDFSStrategy up");
-    let _ = run_offline(
-        &mazes,
-        |goal| ImprovedDFSStrategy::new(goal, &distance_map_cache),
-        |_| None,
-        |p| p,
-        |_| (0, 0),
-    )?;
+    // println!("DFSStrategy down");
+    // let _ = run_offline(
+    //     &mazes,
+    //     |goal| DFSStrategy::new(goal),
+    //     |s| Some(s.distances),
+    //     |_| (0, 0),
+    //     |p| p,
+    // )?
+    // .unwrap();
+    // println!("DFSStrategy up");
+    // let _ = run_offline(
+    //     &mazes,
+    //     |goal| DFSStrategy::new(goal),
+    //     |_| None,
+    //     |p| p,
+    //     |_| (0, 0),
+    // )?;
+    // println!("ImprovedDFSStrategy up");
+    // let _ = run_offline(
+    //     &mazes,
+    //     |goal| ImprovedDFSStrategy::new(goal, &mazes, &distance_map_cache),
+    //     |_| None,
+    //     |p| p,
+    //     |_| (0, 0),
+    // )?;
     run_online(&mazes)?;
 
     Ok(())
