@@ -644,11 +644,11 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
 
         let positions_that_can_reach_goal = determine_reachable(extended_inputs, self.goal);
 
-        // let mut fake_image = vec![0.0; (self.estimated_size.0 * self.estimated_size.1) as usize];
-        // for (x, y) in &positions_that_can_reach_goal {
-        //     fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
-        // }
-        // save_distance_debug_image(&fake_image, self.estimated_size)?;
+        let mut fake_image = vec![0.0; (self.estimated_size.0 * self.estimated_size.1) as usize];
+        for (x, y) in &positions_that_can_reach_goal {
+            fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
+        }
+        save_distance_debug_image(&fake_image, self.estimated_size)?;
 
         possible_dirs = possible_dirs
             .into_iter()
@@ -763,10 +763,15 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
     }
 }
 
-fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Result<()> {
+fn try_play(
+    host_port: String,
+    username: String,
+    password: String,
+    mazes: &Vec<OfflineMaze>,
+) -> Result<()> {
     println!("connecting");
 
-    let stream = TcpStream::connect("gpn-mazing.v6.rocks:4000")?;
+    let stream = TcpStream::connect(host_port)?;
     let mut reader = GameReader::new(&stream);
     let mut writer = GameWriter::new(&stream);
 
@@ -787,13 +792,15 @@ fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Res
 }
 
 fn run_online(mazes: &Vec<OfflineMaze>) -> Result<()> {
+    let host_port =
+        std::env::var("GPN_MAZING_HOST_PORT").unwrap_or("gpn-mazing.v6.rocks:4000".to_string());
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
     let password = std::env::var("GPN_MAZING_PASSWORD").expect("GPN_MAZING_PASSWORD is not set");
 
     loop {
         println!(
             "restarting due to error: {:?}",
-            try_play(username.clone(), password.clone(), mazes),
+            try_play(host_port.clone(), username.clone(), password.clone(), mazes),
         );
         std::thread::sleep(time::Duration::from_millis(200));
     }
