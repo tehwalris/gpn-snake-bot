@@ -427,7 +427,7 @@ impl Strategy for ImprovedDFSStrategy {
         let old_pos = (old_pos.x, old_pos.y);
 
         let estimated_size = (
-            i32::max(old_pos.0 + 1, self.estimated_size.0),
+            i32::max(old_pos.1 + 1, self.estimated_size.0),
             i32::max(old_pos.1 + 1, self.estimated_size.1),
         );
         if estimated_size != self.estimated_size {
