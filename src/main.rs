@@ -562,6 +562,7 @@ struct ImprovedDFSStrategy<'a> {
     inputs: HashMap<(i32, i32), PosWithWalls>,
     estimated_size: (i32, i32),
     mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
+    old_old_pos: (i32, i32),
 }
 
 impl<'a> ImprovedDFSStrategy<'a> {
@@ -571,6 +572,7 @@ impl<'a> ImprovedDFSStrategy<'a> {
             inputs: HashMap::new(),
             estimated_size: (0, 0),
             mazes_by_size,
+            old_old_pos: (-1, -1),
         }
     }
 }
@@ -615,6 +617,9 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         let best_dir = possible_dirs
             .iter()
             .min_by_key(|d| -> FloatOrd<f32> {
+                if d.offset(old_pos) == self.old_old_pos {
+                    return FloatOrd(f32::INFINITY);
+                }
                 let p = d.offset(old_pos);
                 FloatOrd(
                     distances
@@ -625,6 +630,8 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             })
             .unwrap()
             .clone();
+
+        self.old_old_pos = old_pos;
 
         Ok(best_dir)
     }
@@ -845,7 +852,7 @@ fn save_debug_image(name: &str, values: &Vec<f32>, size: (i32, i32)) -> Result<(
 
 fn main() -> Result<()> {
     let mut mazes_by_size = HashMap::new();
-    for size in 10..40 {
+    for size in 10..30 {
         let mazes: Vec<OfflineMaze> = serde_json::from_reader(BufReader::new(File::open(
             format!("mazes/mazes_{}.json", size),
         )?))?;
