@@ -766,7 +766,7 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
 fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Result<()> {
     println!("connecting");
 
-    let stream = TcpStream::connect("localhost:4000")?;
+    let stream = TcpStream::connect("gpn-mazing.v6.rocks:4000")?;
     let mut reader = GameReader::new(&stream);
     let mut writer = GameWriter::new(&stream);
 
