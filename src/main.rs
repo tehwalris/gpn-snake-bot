@@ -345,6 +345,7 @@ impl Strategy for DFSStrategy {
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
         // reverse because this will be reversed again when pushing onto the stack
+        possible_dirs.shuffle(&mut thread_rng());
         possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
             std::cmp::Reverse(FloatOrd(euclidean_distance(d.offset(old_pos), self.goal)))
         });
@@ -426,8 +427,8 @@ impl Strategy for ImprovedDFSStrategy {
         let old_pos = (old_pos.x, old_pos.y);
 
         let estimated_size = (
-            i32::max(old_pos.0, self.estimated_size.0),
-            i32::max(old_pos.1, self.estimated_size.1),
+            i32::max(old_pos.0 + 1, self.estimated_size.0),
+            i32::max(old_pos.1 + 1, self.estimated_size.1),
         );
         if estimated_size != self.estimated_size {
             self.estimated_size = estimated_size;
@@ -447,6 +448,7 @@ impl Strategy for ImprovedDFSStrategy {
         }
 
         // reverse because this will be reversed again when pushing onto the stack
+        possible_dirs.shuffle(&mut thread_rng());
         possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
             std::cmp::Reverse(FloatOrd(self.estimate_distance(d.offset(old_pos))))
         });
@@ -647,7 +649,7 @@ fn run_offline<
 
         let distances = get_distances(strategy);
         assert!(distances_sum.is_none() || distances.is_some());
-        if distances.is_some() {
+        if distances_sum.is_none() && distances.is_some() {
             distances_sum = Some(vec![0; (size.0 * size.1) as usize]);
         }
         if let Some(distances) = distances {
@@ -704,7 +706,7 @@ fn main() -> Result<()> {
         |p| p,
         |_| (0, 0),
     )?;
-    // run_online(&distances, distances_size)?;
+    run_online(&distances, distances_size)?;
 
     Ok(())
 }
