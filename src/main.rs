@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
+use std::thread;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -109,32 +110,22 @@ impl PosWithWalls {
 }
 
 #[derive(Debug)]
+struct GameInfo {
+    width: i32,
+    height: i32,
+    goal_x: i32,
+    goal_y: i32,
+}
+
+#[derive(Debug)]
 enum ServerMessage {
-    Game {
-        width: i32,
-        height: i32,
-        goal_x: i32,
-        goal_y: i32,
-    },
-    Motd {
-        message: String,
-    },
-    Error {
-        message: String,
-    },
-    Goal {
-        x: i32,
-        y: i32,
-    },
+    Game(GameInfo),
+    Motd { message: String },
+    Error { message: String },
+    Goal { x: i32, y: i32 },
     Pos(PosWithWalls),
-    Win {
-        wins: i32,
-        losses: i32,
-    },
-    Lose {
-        wins: i32,
-        losses: i32,
-    },
+    Win { wins: i32, losses: i32 },
+    Lose { wins: i32, losses: i32 },
 }
 
 #[derive(Debug)]
@@ -178,12 +169,12 @@ impl<R: Read> GameReader<R> {
 
         let parts = self.line.split('|').collect::<Vec<_>>();
         match parts[..] {
-            ["game", width, height, goal_x, goal_y] => Ok(ServerMessage::Game {
+            ["game", width, height, goal_x, goal_y] => Ok(ServerMessage::Game(GameInfo {
                 width: width.parse()?,
                 height: height.parse()?,
                 goal_x: goal_x.parse()?,
                 goal_y: goal_y.parse()?,
-            }),
+            })),
             ["motd", message] => Ok(ServerMessage::Motd {
                 message: message.into(),
             }),
@@ -244,6 +235,7 @@ impl<W: Write> GameWriter<W> {
 }
 
 trait Strategy: Sized {
+    fn start(&mut self, game_info: &GameInfo) -> ();
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction>;
 }
 
@@ -256,6 +248,8 @@ impl FirstPossibleStrategy {
 }
 
 impl Strategy for FirstPossibleStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {}
+
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         pos.possible_dirs()
             .first()
@@ -273,6 +267,8 @@ impl RandomPossibleStrategy {
 }
 
 impl Strategy for RandomPossibleStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {}
+
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         if let Some(&dir) = pos.possible_dirs().choose(&mut thread_rng()) {
             Ok(dir)
@@ -325,6 +321,8 @@ impl WeightedRandomStrategy {
 }
 
 impl Strategy for WeightedRandomStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {}
+
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
@@ -366,6 +364,7 @@ impl Strategy for WeightedRandomStrategy {
 }
 
 struct DFSStrategy {
+    get_goal: Box<dyn Fn(&GameInfo) -> (i32, i32)>,
     goal: (i32, i32),
     added_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
@@ -374,9 +373,10 @@ struct DFSStrategy {
 }
 
 impl DFSStrategy {
-    fn new(goal: (i32, i32)) -> Self {
+    fn new(get_goal: Box<dyn Fn(&GameInfo) -> (i32, i32)>) -> Self {
         Self {
-            goal,
+            get_goal,
+            goal: (-1, -1),
             added_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
@@ -386,7 +386,15 @@ impl DFSStrategy {
 }
 
 impl Strategy for DFSStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        self.goal = (self.get_goal)(game_info);
+    }
+
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
+        if self.goal.0 < 0 || self.goal.1 < 0 {
+            return Err(anyhow!("invalid goal (maybe start didn't run)"));
+        }
+
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
         // reverse because this will be reversed again when pushing onto the stack
@@ -454,7 +462,7 @@ impl<'a> DistanceMapCache<'a> {
         if !self.distances_by_goal.contains_key(&goal) {
             let (distances, actual_size) = run_offline(
                 self.mazes,
-                |goal| DFSStrategy::new(goal),
+                |goal| DFSStrategy::new(Box::new(move |_| goal)),
                 |s| Some(s.distances),
                 |_| goal,
                 |_| (0, 0),
@@ -559,6 +567,7 @@ fn determine_reachable(
 }
 
 struct ImprovedDFSStrategy<'a> {
+    get_goal: Box<dyn Fn(&GameInfo) -> (i32, i32)>,
     goal: (i32, i32),
     inputs: HashMap<(i32, i32), PosWithWalls>,
     estimated_size: (i32, i32),
@@ -568,9 +577,13 @@ struct ImprovedDFSStrategy<'a> {
 }
 
 impl<'a> ImprovedDFSStrategy<'a> {
-    fn new(goal: (i32, i32), mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>) -> Self {
+    fn new(
+        get_goal: Box<dyn Fn(&GameInfo) -> (i32, i32)>,
+        mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
+    ) -> Self {
         Self {
-            goal,
+            get_goal,
+            goal: (-1, -1),
             inputs: HashMap::new(),
             estimated_size: (0, 0),
             mazes_by_size,
@@ -581,7 +594,15 @@ impl<'a> ImprovedDFSStrategy<'a> {
 }
 
 impl<'a> Strategy for ImprovedDFSStrategy<'a> {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        self.goal = (self.get_goal)(game_info);
+    }
+
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
+        if self.goal.0 < 0 || self.goal.1 < 0 {
+            return Err(anyhow!("invalid goal (maybe start didn't run)"));
+        }
+
         let mut possible_dirs = old_pos.possible_dirs();
         self.inputs.insert((old_pos.x, old_pos.y), old_pos.clone());
         let old_pos = (old_pos.x, old_pos.y);
@@ -625,7 +646,7 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             };
         let (distances, actual_size) = run_offline(
             &mazes,
-            |goal| DFSStrategy::new(goal),
+            |goal| DFSStrategy::new(Box::new(move |_| goal)),
             |s| Some(s.distances),
             |_| self.goal,
             |_| (0, 0),
@@ -704,7 +725,7 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             .min_by_key(|d| -> FloatOrd<f32> {
                 let p = d.offset(old_pos);
                 let penalty = if self.path_from_root.last().cloned() == Some(p) {
-                    5.0
+                    0.5
                 } else {
                     0.0
                 };
@@ -734,8 +755,8 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
     }
 }
 
-fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
-    make_strategy: F,
+fn run_round<S: Strategy, R: Read, W: Write>(
+    mut strategy: S,
     reader: &mut GameReader<R>,
     writer: &mut GameWriter<W>,
 ) -> Result<()> {
@@ -748,7 +769,7 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
         println!("{:?}", msg);
 
         match msg {
-            ServerMessage::Game { .. } => (),
+            ServerMessage::Game(game_info) => strategy.start(&game_info),
             ServerMessage::Motd { .. } => (),
             ServerMessage::Error { .. } => return Ok(()),
             ServerMessage::Goal { x, y } => goal = Some((x, y)),
@@ -757,9 +778,6 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
             ServerMessage::Lose { .. } => return Ok(()),
         };
     }
-
-    println!("starting round");
-    let mut strategy = make_strategy(goal.unwrap());
 
     loop {
         let old_pos = pos.unwrap();
@@ -793,26 +811,72 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
 
 fn try_play(
     host_port: String,
-    username: String,
+    base_username: String,
     password: String,
     mazes_by_size: &HashMap<usize, Vec<OfflineMaze>>,
 ) -> Result<()> {
     println!("connecting");
 
-    let stream = TcpStream::connect(host_port)?;
-    let mut reader = GameReader::new(&stream);
-    let mut writer = GameWriter::new(&stream);
+    let usernames = [&base_username, "b0", "b1", "b2"];
 
-    writer.write(&ClientMessage::Join {
-        username: username.clone(),
-        password: password.clone(),
-    })?;
+    let mut handles = Vec::new();
+    for (i, username) in usernames.into_iter().enumerate() {
+        let host_port = host_port.clone();
+        let username = username.to_string();
+        let username_no_move = username.to_string();
+        let password = password.clone();
+        let mazes_by_size = mazes_by_size.clone();
+        handles.push(thread::spawn(move || {
+            let run = || -> Result<()> {
+                let stream = TcpStream::connect(host_port)?;
+                let mut reader = GameReader::new(&stream);
+                let mut writer = GameWriter::new(&stream);
 
-    run_round(
-        |goal| ImprovedDFSStrategy::new(goal, &mazes_by_size),
-        &mut reader,
-        &mut writer,
-    )?;
+                writer.write(&ClientMessage::Join {
+                    username: username,
+                    password: password,
+                })?;
+
+                if i == 0 {
+                    run_round(
+                        ImprovedDFSStrategy::new(
+                            Box::new(|game_info| (game_info.goal_x, game_info.goal_y)),
+                            &mazes_by_size,
+                        ),
+                        &mut reader,
+                        &mut writer,
+                    )?;
+                } else {
+                    run_round(
+                        DFSStrategy::new(Box::new(|game_info| {
+                            let x = Uniform::new(0, game_info.width).sample(&mut thread_rng());
+                            (x, 0)
+                        })),
+                        &mut reader,
+                        &mut writer,
+                    )?;
+                }
+
+                Ok(())
+            };
+            match run() {
+                Ok(()) => (),
+                Err(err) => println!("thread for {}: error: {:?}", username_no_move.clone(), err),
+            }
+        }));
+    }
+
+    let mut last_error_result = Ok(());
+    for handle in handles {
+        match handle.join() {
+            Ok(()) => (),
+            Err(err) => last_error_result = Err(err),
+        }
+    }
+    if last_error_result.is_err() {
+        println!("error joining threads: {:?}", last_error_result);
+        return Err(anyhow!("failed to join thread"));
+    }
 
     Ok(())
 }
@@ -949,7 +1013,7 @@ fn save_debug_image(name: &str, values: &Vec<f32>, size: (i32, i32)) -> Result<(
 
 fn main() -> Result<()> {
     let mut mazes_by_size = HashMap::new();
-    for size in 2..20 {
+    for size in 2..40 {
         let mazes: Vec<OfflineMaze> = serde_json::from_reader(BufReader::new(File::open(
             format!("mazes/mazes_{}.json", size),
         )?))?;
