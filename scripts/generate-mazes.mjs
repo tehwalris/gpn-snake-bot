@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const mazeCount = 300;
 
-for (let size = 10; size < 40; size++) {
+for (let size = 2; size < 40; size++) {
   console.log(size);
 
   const outputPath = path.join(__dirname, `../mazes/mazes_${size}.json`);

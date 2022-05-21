@@ -659,7 +659,10 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                     .set_wall_in_dir(d.reverse(), true);
             }
         };
-        block_cell(old_pos);
+        // block_cell(old_pos);
+        for &p in &self.path_from_root {
+            block_cell(p);
+        }
         for (&target, &d) in &self.first_entry_directions {
             let source = d.reverse().offset(target);
             let source_input = extended_inputs.get_mut(&source).unwrap();
@@ -701,7 +704,7 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             .min_by_key(|d| -> FloatOrd<f32> {
                 let p = d.offset(old_pos);
                 let penalty = if self.path_from_root.last().cloned() == Some(p) {
-                    1.0
+                    5.0
                 } else {
                     0.0
                 };
@@ -946,7 +949,7 @@ fn save_debug_image(name: &str, values: &Vec<f32>, size: (i32, i32)) -> Result<(
 
 fn main() -> Result<()> {
     let mut mazes_by_size = HashMap::new();
-    for size in 10..20 {
+    for size in 2..20 {
         let mazes: Vec<OfflineMaze> = serde_json::from_reader(BufReader::new(File::open(
             format!("mazes/mazes_{}.json", size),
         )?))?;
