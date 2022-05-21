@@ -60,7 +60,7 @@ impl fmt::Display for Direction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PosWithWalls {
     x: i32,
     y: i32,
@@ -506,6 +506,10 @@ fn extend_assuming_no_more_walls(
         }
     }
 
+    for input in known_inputs.clone().into_iter() {
+        assert!(known_inputs.get(&input.0).cloned() == Some(input.1));
+    }
+
     inputs
 }
 
@@ -533,6 +537,7 @@ struct ImprovedDFSStrategy<'a> {
     goal: (i32, i32),
     inputs: HashMap<(i32, i32), PosWithWalls>,
     added_positions: HashSet<(i32, i32)>,
+    backtracked_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
     scaled_distances: Vec<f32>,
@@ -551,6 +556,7 @@ impl<'a> ImprovedDFSStrategy<'a> {
             goal,
             inputs: HashMap::new(),
             added_positions: HashSet::new(),
+            backtracked_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
             scaled_distances: Vec::new(),
@@ -600,18 +606,51 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         }
 
         let mut extended_inputs = extend_assuming_no_more_walls(&self.inputs, self.estimated_size);
-        extended_inputs.insert(
-            old_pos,
-            PosWithWalls {
-                x: old_pos.0,
-                y: old_pos.1,
-                top: true,
-                right: true,
-                bottom: true,
-                left: true,
-            },
-        );
+        println!("DEBUG extended inputs early: {:?}", extended_inputs);
+        let mut block_cell = |p: (i32, i32)| {
+            extended_inputs.insert(
+                old_pos,
+                PosWithWalls {
+                    x: p.0,
+                    y: p.1,
+                    top: true,
+                    right: true,
+                    bottom: true,
+                    left: true,
+                },
+            );
+            for d in [
+                Direction::Up,
+                Direction::Right,
+                Direction::Down,
+                Direction::Left,
+            ] {
+                extended_inputs
+                    .get_mut(&d.offset(p))
+                    .unwrap()
+                    .set_wall_in_dir(d.reverse(), true);
+            }
+        };
+        block_cell(old_pos);
+        {
+            let mut p = old_pos;
+            for d in self.path_from_root.iter().rev() {
+                p = d.reverse().offset(p);
+                block_cell(p);
+            }
+        }
+        for p in &self.backtracked_positions {
+            block_cell(*p);
+        }
+
         let positions_that_can_reach_goal = determine_reachable(extended_inputs, self.goal);
+
+        let mut fake_image = vec![0.0; (self.estimated_size.0 * self.estimated_size.1) as usize];
+        for (x, y) in &positions_that_can_reach_goal {
+            fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
+        }
+        save_distance_debug_image(&fake_image, self.estimated_size)?;
+
         possible_dirs = possible_dirs
             .into_iter()
             .filter(|d| {
@@ -638,6 +677,13 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
             }
         }
 
+        while let Some(p) = self.stack.last() {
+            if positions_that_can_reach_goal.contains(p) {
+                break;
+            }
+            self.stack.pop();
+        }
+
         let target_new_pos = self
             .stack
             .last()
@@ -657,6 +703,7 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                 .pop()
                 .ok_or(anyhow!("nothing left to backtrack"))?
                 .reverse();
+            self.backtracked_positions.insert(old_pos);
             Ok(back_direction)
         }
     }
@@ -720,7 +767,7 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
 fn try_play(username: String, password: String, mazes: &Vec<OfflineMaze>) -> Result<()> {
     println!("connecting");
 
-    let stream = TcpStream::connect("94.45.252.221:4000")?;
+    let stream = TcpStream::connect("localhost:4000")?;
     let mut reader = GameReader::new(&stream);
     let mut writer = GameWriter::new(&stream);
 
