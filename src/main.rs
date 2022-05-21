@@ -59,7 +59,7 @@ impl fmt::Display for Direction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PosWithWalls {
     x: i32,
     y: i32,
@@ -411,7 +411,6 @@ impl Strategy for DFSStrategy {
 
 struct ImprovedDFSStrategy {
     goal: (i32, i32),
-    inputs: HashMap<(i32, i32), PosWithWalls>,
     added_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
@@ -425,7 +424,6 @@ impl ImprovedDFSStrategy {
     fn new(goal: (i32, i32), distances: &Vec<f32>, distances_size: (i32, i32)) -> Self {
         Self {
             goal,
-            inputs: HashMap::new(),
             added_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
@@ -446,17 +444,6 @@ impl Strategy for ImprovedDFSStrategy {
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Decision> {
         if self.goal != (0, 0) {
             return Err(anyhow!("unsupported goal"));
-        }
-
-        let k = (old_pos.x, old_pos.y);
-        if let Some(old_input) = self.inputs.get(&k) {
-            if old_input != old_pos {
-                return Err(anyhow!(
-                    "received conflicting information about a visited position"
-                ));
-            }
-        } else {
-            self.inputs.insert((old_pos.x, old_pos.y), old_pos.clone());
         }
 
         let mut possible_dirs = old_pos.possible_dirs();
@@ -522,7 +509,7 @@ impl Strategy for ImprovedDFSStrategy {
                 .reverse();
             Ok(Decision {
                 direction: back_direction,
-                speculated_position: self.inputs.get(&back_direction.offset(old_pos)).cloned(),
+                speculated_position: None,
             })
         }
     }
@@ -561,11 +548,6 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
         writer.write(&ClientMessage::Move {
             direction: decision.direction,
         })?;
-
-        if let Some(speculated_position) = decision.speculated_position {
-            pos = Some(speculated_position);
-            continue;
-        }
 
         loop {
             let msg = reader.read()?;
@@ -686,15 +668,7 @@ fn run_offline<
                 steps_until_goal += 1;
             }
             match strategy.step(&inputs_by_position[&pos]) {
-                Ok(Decision {
-                    direction,
-                    speculated_position,
-                }) => {
-                    pos = direction.offset(pos);
-                    if speculated_position.is_some() {
-                        assert!(inputs_by_position.get(&pos).cloned() == speculated_position);
-                    }
-                }
+                Ok(Decision { direction, .. }) => pos = direction.offset(pos),
                 Err(_) => break,
             }
             if pos == goal {
