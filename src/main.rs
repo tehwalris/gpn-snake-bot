@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
-use std::sync::Mutex;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -110,12 +109,31 @@ impl PosWithWalls {
 
 #[derive(Debug)]
 enum ServerMessage {
-    Motd { message: String },
-    Error { message: String },
-    Goal { x: i32, y: i32 },
+    Game {
+        width: i32,
+        height: i32,
+        goal_x: i32,
+        goal_y: i32,
+    },
+    Motd {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+    Goal {
+        x: i32,
+        y: i32,
+    },
     Pos(PosWithWalls),
-    Win { wins: i32, losses: i32 },
-    Lose { wins: i32, losses: i32 },
+    Win {
+        wins: i32,
+        losses: i32,
+    },
+    Lose {
+        wins: i32,
+        losses: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -159,6 +177,12 @@ impl<R: Read> GameReader<R> {
 
         let parts = self.line.split('|').collect::<Vec<_>>();
         match parts[..] {
+            ["game", width, height, goal_x, goal_y] => Ok(ServerMessage::Game {
+                width: width.parse()?,
+                height: height.parse()?,
+                goal_x: goal_x.parse()?,
+                goal_y: goal_y.parse()?,
+            }),
             ["motd", message] => Ok(ServerMessage::Motd {
                 message: message.into(),
             }),
@@ -540,18 +564,12 @@ struct ImprovedDFSStrategy<'a> {
     backtracked_positions: HashSet<(i32, i32)>,
     stack: Vec<(i32, i32)>,
     path_from_root: Vec<Direction>,
-    scaled_distances: Vec<f32>,
     estimated_size: (i32, i32),
-    mazes: &'a Vec<OfflineMaze>,
-    distance_map_cache: &'a Mutex<DistanceMapCache<'a>>,
+    mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
 }
 
 impl<'a> ImprovedDFSStrategy<'a> {
-    fn new(
-        goal: (i32, i32),
-        mazes: &'a Vec<OfflineMaze>,
-        distance_map_cache: &'a Mutex<DistanceMapCache<'a>>,
-    ) -> Self {
+    fn new(goal: (i32, i32), mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>) -> Self {
         Self {
             goal,
             inputs: HashMap::new(),
@@ -559,15 +577,9 @@ impl<'a> ImprovedDFSStrategy<'a> {
             backtracked_positions: HashSet::new(),
             stack: Vec::new(),
             path_from_root: Vec::new(),
-            scaled_distances: Vec::new(),
             estimated_size: (0, 0),
-            mazes,
-            distance_map_cache,
+            mazes_by_size,
         }
-    }
-
-    fn estimate_distance(&self, pos: (i32, i32)) -> f32 {
-        self.scaled_distances[(pos.1 * self.estimated_size.0 + pos.0) as usize]
     }
 }
 
@@ -577,33 +589,35 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         self.inputs.insert((old_pos.x, old_pos.y), old_pos.clone());
         let old_pos = (old_pos.x, old_pos.y);
 
-        let estimated_size = (
+        self.estimated_size = (
             i32::max(old_pos.1 + 1, self.estimated_size.0),
             i32::max(old_pos.1 + 1, self.estimated_size.1),
         );
-        if estimated_size != self.estimated_size {
-            self.estimated_size = estimated_size;
-            let mut distance_map_cache = self.distance_map_cache.lock().unwrap();
-            let (distances, distances_size) = distance_map_cache.get_or_calculate(|p| {
-                (
-                    self.goal.0 * p.0 / estimated_size.0,
-                    self.goal.1 * p.1 / estimated_size.1,
-                )
-            });
-            let distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
-                distances_size.0 as u32,
-                distances_size.1 as u32,
-                distances.clone(),
-            )
-            .ok_or(anyhow!("failed to create image"))?;
-            let scaled_distances = image::imageops::resize(
-                &distances,
-                estimated_size.0 as u32,
-                estimated_size.1 as u32,
-                image::imageops::FilterType::Lanczos3,
-            );
-            self.scaled_distances = scaled_distances.to_vec();
-        }
+        assert!(self.estimated_size.0 == self.estimated_size.1);
+        let mazes: Vec<OfflineMaze> =
+            if let Some(mazes) = self.mazes_by_size.get(&(self.estimated_size.0 as usize)) {
+                mazes
+                    .iter()
+                    .map(|mut maze| -> OfflineMaze {
+                        maze.iter()
+                            .map(|p| self.inputs.get(&(p.x, p.y)).cloned().unwrap_or(p.clone()))
+                            .collect()
+                    })
+                    .collect()
+            } else {
+                return Err(anyhow!("no mazes of size {}", self.estimated_size.0));
+            };
+        let (distances, actual_size) = run_offline(
+            &mazes,
+            |goal| DFSStrategy::new(goal),
+            |s| Some(s.distances),
+            |_| self.goal,
+            |_| (0, 0),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(actual_size == self.estimated_size);
+        save_debug_image("distances_mean", &distances, self.estimated_size)?;
 
         let mut extended_inputs = extend_assuming_no_more_walls(&self.inputs, self.estimated_size);
         let mut block_cell = |p: (i32, i32)| {
@@ -648,7 +662,7 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         for (x, y) in &positions_that_can_reach_goal {
             fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
         }
-        save_distance_debug_image(&fake_image, self.estimated_size)?;
+        save_debug_image("left_to_explore", &fake_image, self.estimated_size)?;
 
         possible_dirs = possible_dirs
             .into_iter()
@@ -664,7 +678,13 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         // reverse because this will be reversed again when pushing onto the stack
         possible_dirs.shuffle(&mut thread_rng());
         possible_dirs.sort_by_key(|d| -> std::cmp::Reverse<FloatOrd<f32>> {
-            std::cmp::Reverse(FloatOrd(self.estimate_distance(d.offset(old_pos))))
+            let p = d.offset(old_pos);
+            std::cmp::Reverse(FloatOrd(
+                distances
+                    .get((p.1 * self.estimated_size.0 + p.0) as usize)
+                    .cloned()
+                    .unwrap_or(f32::INFINITY),
+            ))
         });
 
         self.added_positions.insert(old_pos); // for the initial cell
@@ -722,6 +742,7 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
         println!("{:?}", msg);
 
         match msg {
+            ServerMessage::Game { .. } => (),
             ServerMessage::Motd { .. } => (),
             ServerMessage::Error { .. } => return Ok(()),
             ServerMessage::Goal { x, y } => goal = Some((x, y)),
@@ -745,6 +766,7 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
             println!("{:?}", msg);
 
             match msg {
+                ServerMessage::Game { .. } => (),
                 ServerMessage::Motd { .. } => (),
                 ServerMessage::Error { .. } => return Ok(()),
                 ServerMessage::Goal { .. } => return Ok(()),
@@ -767,7 +789,7 @@ fn try_play(
     host_port: String,
     username: String,
     password: String,
-    mazes: &Vec<OfflineMaze>,
+    mazes_by_size: &HashMap<usize, Vec<OfflineMaze>>,
 ) -> Result<()> {
     println!("connecting");
 
@@ -780,10 +802,8 @@ fn try_play(
         password: password.clone(),
     })?;
 
-    let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
-
     run_round(
-        |goal| ImprovedDFSStrategy::new(goal, &mazes, &distance_map_cache),
+        |goal| ImprovedDFSStrategy::new(goal, &mazes_by_size),
         &mut reader,
         &mut writer,
     )?;
@@ -791,7 +811,7 @@ fn try_play(
     Ok(())
 }
 
-fn run_online(mazes: &Vec<OfflineMaze>) -> Result<()> {
+fn run_online(mazes_by_size: &HashMap<usize, Vec<OfflineMaze>>) -> Result<()> {
     let host_port =
         std::env::var("GPN_MAZING_HOST_PORT").unwrap_or("gpn-mazing.v6.rocks:4000".to_string());
     let username = std::env::var("GPN_MAZING_USERNAME").expect("GPN_MAZING_USERNAME is not set");
@@ -800,7 +820,12 @@ fn run_online(mazes: &Vec<OfflineMaze>) -> Result<()> {
     loop {
         println!(
             "restarting due to error: {:?}",
-            try_play(host_port.clone(), username.clone(), password.clone(), mazes),
+            try_play(
+                host_port.clone(),
+                username.clone(),
+                password.clone(),
+                mazes_by_size
+            ),
         );
         std::thread::sleep(time::Duration::from_millis(200));
     }
@@ -875,8 +900,10 @@ fn run_offline<
         if let Some(distances) = distances {
             for y in 0..size.1 {
                 for x in 0..size.0 {
-                    distances_sum.as_deref_mut().unwrap()[(size.0 * y + x) as usize] +=
-                        distances.get(&(x, y)).unwrap();
+                    distances_sum.as_deref_mut().unwrap()[(size.0 * y + x) as usize] += distances
+                        .get(&(x, y))
+                        .cloned()
+                        .unwrap_or(size.0 * size.1 + 1);
                 }
             }
         }
@@ -893,32 +920,36 @@ fn run_offline<
     });
 
     if let Some(distances_mean) = distances_mean {
-        save_distance_debug_image(&distances_mean, size)?;
+        save_debug_image("distances_mean", &distances_mean, size)?;
         Ok(Some((distances_mean, size)))
     } else {
         Ok(None)
     }
 }
 
-fn save_distance_debug_image(distances_mean: &Vec<f32>, size: (i32, i32)) -> Result<()> {
-    let max_distances_mean = *distances_mean.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
+fn save_debug_image(name: &str, values: &Vec<f32>, size: (i32, i32)) -> Result<()> {
+    let prefix = std::env::var("GPN_MAZING_DEBUG_PREFIX").unwrap_or("default".to_string());
+
+    let max = *values.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
     let debug_img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(
         size.0 as u32,
         size.1 as u32,
-        distances_mean
-            .iter()
-            .map(|v| (v / max_distances_mean * 255.0) as u8)
-            .collect(),
+        values.iter().map(|v| (v / max * 255.0) as u8).collect(),
     )
     .ok_or(anyhow!("failed to create image"))?;
-    debug_img.save("output/distances_mean.png")?;
+    debug_img.save(format!("output/{}_{}.png", prefix, name))?;
     Ok(())
 }
 
 fn main() -> Result<()> {
-    let mazes: Vec<OfflineMaze> =
-        serde_json::from_reader(BufReader::new(File::open("mazes/mazes.json")?))?;
-    println!("loaded {} mazes", mazes.len());
+    let mut mazes_by_size = HashMap::new();
+    for size in 10..40 {
+        let mazes: Vec<OfflineMaze> = serde_json::from_reader(BufReader::new(File::open(
+            format!("mazes/mazes_{}.json", size),
+        )?))?;
+        println!("loaded {} mazes for size {}", mazes.len(), size);
+        mazes_by_size.insert(size, mazes);
+    }
 
     // let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
     //
@@ -947,7 +978,7 @@ fn main() -> Result<()> {
     //     |p| p,
     //     |_| (0, 0),
     // )?;
-    run_online(&mazes)?;
+    run_online(&mazes_by_size)?;
 
     Ok(())
 }

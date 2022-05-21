@@ -6,19 +6,23 @@ import generateMaze from "generate-maze";
 const __filename = url.fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const size = [25, 25];
-const mazeCount = 500;
-const outputPath = path.join(__dirname, "../mazes/mazes.json");
+const mazeCount = 300;
 
-const mazes = [];
-for (let i = 0; i < mazeCount; i++) {
-  const maze = generateMaze(
-    size[0],
-    size[1],
-    true,
-    Math.floor((i / (mazeCount - 1)) * 1337420)
-  ).flat();
-  mazes.push(maze);
+for (let size = 10; size < 40; size++) {
+  console.log(size);
+
+  const outputPath = path.join(__dirname, `../mazes/mazes_${size}.json`);
+
+  const mazes = [];
+  for (let i = 0; i < mazeCount; i++) {
+    const maze = generateMaze(
+      size,
+      size,
+      true,
+      Math.floor((i / (mazeCount - 1)) * 1337420)
+    ).flat();
+    mazes.push(maze);
+  }
+
+  fs.writeFileSync(outputPath, JSON.stringify(mazes));
 }
-
-fs.writeFileSync(outputPath, JSON.stringify(mazes));
