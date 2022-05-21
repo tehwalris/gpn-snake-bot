@@ -198,8 +198,14 @@ impl<W: Write> GameWriter<W> {
     }
 }
 
+#[derive(Debug)]
+struct Decision {
+    direction: Direction,
+    speculated_position: Option<PosWithWalls>,
+}
+
 trait Strategy: Sized {
-    fn step(&mut self, pos: &PosWithWalls) -> Result<Direction>;
+    fn step(&mut self, pos: &PosWithWalls) -> Result<Decision>;
 }
 
 struct FirstPossibleStrategy {}
@@ -211,11 +217,16 @@ impl FirstPossibleStrategy {
 }
 
 impl Strategy for FirstPossibleStrategy {
-    fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
-        pos.possible_dirs()
+    fn step(&mut self, pos: &PosWithWalls) -> Result<Decision> {
+        let direction = pos
+            .possible_dirs()
             .first()
             .cloned()
-            .ok_or(anyhow!("no valid direction to move"))
+            .ok_or(anyhow!("no valid direction to move"))?;
+        Ok(Decision {
+            direction,
+            speculated_position: None,
+        })
     }
 }
 
@@ -228,9 +239,12 @@ impl RandomPossibleStrategy {
 }
 
 impl Strategy for RandomPossibleStrategy {
-    fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
-        if let Some(&dir) = pos.possible_dirs().choose(&mut thread_rng()) {
-            Ok(dir)
+    fn step(&mut self, pos: &PosWithWalls) -> Result<Decision> {
+        if let Some(&direction) = pos.possible_dirs().choose(&mut thread_rng()) {
+            Ok(Decision {
+                direction,
+                speculated_position: None,
+            })
         } else {
             Err(anyhow!("no valid direction to move"))
         }
@@ -280,7 +294,7 @@ impl WeightedRandomStrategy {
 }
 
 impl Strategy for WeightedRandomStrategy {
-    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Decision> {
         let possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
 
@@ -308,15 +322,18 @@ impl Strategy for WeightedRandomStrategy {
             })
             .collect::<Vec<_>>();
 
-        let chosen_dir = possible_dirs[WeightedIndex::new(weights)?.sample(&mut thread_rng())];
-        let new_pos = chosen_dir.offset(old_pos);
+        let direction = possible_dirs[WeightedIndex::new(weights)?.sample(&mut thread_rng())];
+        let new_pos = direction.offset(old_pos);
 
         self.visited_positions.insert(new_pos);
         if !self.entry_by_position.contains_key(&new_pos) {
             self.entry_by_position.insert(new_pos, old_pos);
         }
 
-        Ok(chosen_dir)
+        Ok(Decision {
+            direction,
+            speculated_position: None,
+        })
     }
 }
 
@@ -341,7 +358,7 @@ impl DFSStrategy {
 }
 
 impl Strategy for DFSStrategy {
-    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Decision> {
         let mut possible_dirs = old_pos.possible_dirs();
         let old_pos = (old_pos.x, old_pos.y);
         // reverse because this will be reversed again when pushing onto the stack
@@ -374,14 +391,20 @@ impl Strategy for DFSStrategy {
         if let Some(target_direction) = target_direction {
             self.stack.pop();
             self.path_from_root.push(target_direction);
-            Ok(target_direction)
+            Ok(Decision {
+                direction: target_direction,
+                speculated_position: None,
+            })
         } else {
             let back_direction = self
                 .path_from_root
                 .pop()
                 .ok_or(anyhow!("nothing left to backtrack"))?
                 .reverse();
-            Ok(back_direction)
+            Ok(Decision {
+                direction: back_direction,
+                speculated_position: None,
+            })
         }
     }
 }
@@ -418,7 +441,7 @@ impl ImprovedDFSStrategy {
 }
 
 impl Strategy for ImprovedDFSStrategy {
-    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
+    fn step(&mut self, old_pos: &PosWithWalls) -> Result<Decision> {
         if self.goal != (0, 0) {
             return Err(anyhow!("unsupported goal"));
         }
@@ -474,14 +497,20 @@ impl Strategy for ImprovedDFSStrategy {
         if let Some(target_direction) = target_direction {
             self.stack.pop();
             self.path_from_root.push(target_direction);
-            Ok(target_direction)
+            Ok(Decision {
+                direction: target_direction,
+                speculated_position: None,
+            })
         } else {
             let back_direction = self
                 .path_from_root
                 .pop()
                 .ok_or(anyhow!("nothing left to backtrack"))?
                 .reverse();
-            Ok(back_direction)
+            Ok(Decision {
+                direction: back_direction,
+                speculated_position: None,
+            })
         }
     }
 }
@@ -514,9 +543,11 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
 
     loop {
         let old_pos = pos.unwrap();
-        let direction = strategy.step(&old_pos)?;
-        println!("moving {}", direction);
-        writer.write(&ClientMessage::Move { direction })?;
+        let decision = strategy.step(&old_pos)?;
+        println!("decision: {:?}", decision);
+        writer.write(&ClientMessage::Move {
+            direction: decision.direction,
+        })?;
 
         loop {
             let msg = reader.read()?;
@@ -527,7 +558,7 @@ fn run_round<S: Strategy, F: FnOnce((i32, i32)) -> S, R: Read, W: Write>(
                 ServerMessage::Error { .. } => return Ok(()),
                 ServerMessage::Goal { .. } => return Ok(()),
                 ServerMessage::Pos(new_pos) => {
-                    let expected_pos = direction.offset((old_pos.x, old_pos.y));
+                    let expected_pos = decision.direction.offset((old_pos.x, old_pos.y));
                     if (new_pos.x, new_pos.y) != expected_pos {
                         return Err(anyhow!("unexpected position after move"));
                     }
@@ -637,7 +668,7 @@ fn run_offline<
                 steps_until_goal += 1;
             }
             match strategy.step(&inputs_by_position[&pos]) {
-                Ok(dir) => pos = dir.offset(pos),
+                Ok(Decision { direction, .. }) => pos = direction.offset(pos),
                 Err(_) => break,
             }
             if pos == goal {
