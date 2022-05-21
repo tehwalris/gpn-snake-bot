@@ -606,7 +606,6 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         }
 
         let mut extended_inputs = extend_assuming_no_more_walls(&self.inputs, self.estimated_size);
-        println!("DEBUG extended inputs early: {:?}", extended_inputs);
         let mut block_cell = |p: (i32, i32)| {
             extended_inputs.insert(
                 old_pos,
@@ -645,11 +644,11 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
 
         let positions_that_can_reach_goal = determine_reachable(extended_inputs, self.goal);
 
-        let mut fake_image = vec![0.0; (self.estimated_size.0 * self.estimated_size.1) as usize];
-        for (x, y) in &positions_that_can_reach_goal {
-            fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
-        }
-        save_distance_debug_image(&fake_image, self.estimated_size)?;
+        // let mut fake_image = vec![0.0; (self.estimated_size.0 * self.estimated_size.1) as usize];
+        // for (x, y) in &positions_that_can_reach_goal {
+        //     fake_image[(y * self.estimated_size.0 + x) as usize] = 1.0;
+        // }
+        // save_distance_debug_image(&fake_image, self.estimated_size)?;
 
         possible_dirs = possible_dirs
             .into_iter()
@@ -914,8 +913,8 @@ fn main() -> Result<()> {
         serde_json::from_reader(BufReader::new(File::open("mazes/mazes.json")?))?;
     println!("loaded {} mazes", mazes.len());
 
-    let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
-
+    // let distance_map_cache = Mutex::new(DistanceMapCache::new(&mazes));
+    //
     // println!("DFSStrategy down");
     // let _ = run_offline(
     //     &mazes,
