@@ -16,7 +16,6 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
 use std::sync::Mutex;
-use std::sync::MutexGuard;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -419,8 +418,9 @@ impl<'a> DistanceMapCache<'a> {
             .unwrap()
             .unwrap();
             assert!(actual_size == size);
-            self.distances_by_goal
-                .insert(goal, (distances.clone(), size));
+            let distances_max = *distances.iter().max_by_key(|v| FloatOrd(**v)).unwrap();
+            let distances = distances.into_iter().map(|v| v / distances_max).collect();
+            self.distances_by_goal.insert(goal, (distances, size));
         }
 
         self.distances_by_goal.get(&goal).unwrap()
@@ -473,7 +473,6 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                     self.goal.1 * p.1 / estimated_size.1,
                 )
             });
-            save_distance_debug_image(distances, *distances_size)?;
             let distances = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
                 distances_size.0 as u32,
                 distances_size.1 as u32,
