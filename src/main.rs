@@ -6,6 +6,7 @@ use core::time;
 use float_ord::FloatOrd;
 use image::ImageBuffer;
 use image::Luma;
+use rand::distributions::Uniform;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
@@ -563,7 +564,7 @@ struct ImprovedDFSStrategy<'a> {
     estimated_size: (i32, i32),
     mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
     first_entry_directions: HashMap<(i32, i32), Direction>,
-    old_old_pos: (i32, i32),
+    path_from_root: Vec<(i32, i32)>,
 }
 
 impl<'a> ImprovedDFSStrategy<'a> {
@@ -574,7 +575,7 @@ impl<'a> ImprovedDFSStrategy<'a> {
             estimated_size: (0, 0),
             mazes_by_size,
             first_entry_directions: HashMap::new(),
-            old_old_pos: (-1, -1),
+            path_from_root: Vec::new(),
         }
     }
 }
@@ -595,14 +596,26 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                 mazes
                     .iter()
                     .map(|maze| -> OfflineMaze {
-                        let mut maze: OfflineMaze = maze
-                            .iter()
-                            .map(|p| self.inputs.get(&(p.x, p.y)).cloned().unwrap_or(p.clone()))
-                            .collect();
-                        for (&target, &d) in &self.first_entry_directions {
-                            let source = d.reverse().offset(target);
-                            maze[(source.1 * self.estimated_size.0 + source.0) as usize]
-                                .set_wall_in_dir(d, true);
+                        let mut maze = maze.clone();
+                        for (p, input) in &self.inputs {
+                            for d in [
+                                Direction::Up,
+                                Direction::Right,
+                                Direction::Down,
+                                Direction::Left,
+                            ] {
+                                maze[(p.1 * self.estimated_size.0 + p.0) as usize]
+                                    .set_wall_in_dir(d, input.get_wall_in_dir(d));
+                                let po = d.offset(*p);
+                                if po.0 >= 0
+                                    && po.0 < self.estimated_size.0
+                                    && po.1 >= 0
+                                    && po.1 < self.estimated_size.1
+                                {
+                                    maze[(po.1 * self.estimated_size.0 + po.0) as usize]
+                                        .set_wall_in_dir(d.reverse(), input.get_wall_in_dir(d));
+                                }
+                            }
                         }
                         maze
                     })
@@ -686,26 +699,32 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
                 can_reach
             })
             .min_by_key(|d| -> FloatOrd<f32> {
-                if d.offset(old_pos) == self.old_old_pos {
-                    return FloatOrd(f32::INFINITY);
-                }
                 let p = d.offset(old_pos);
+                let penalty = if self.path_from_root.last().cloned() == Some(p) {
+                    1.0
+                } else {
+                    0.0
+                };
                 FloatOrd(
                     distances
                         .get((p.1 * self.estimated_size.0 + p.0) as usize)
                         .cloned()
-                        .unwrap_or(f32::INFINITY),
+                        .unwrap_or(f32::INFINITY)
+                        + penalty,
                 )
             })
             .cloned()
             .unwrap_or_else(|| self.first_entry_directions.get(&old_pos).unwrap().reverse())
             .clone();
 
-        self.old_old_pos = old_pos;
-
         let new_pos = best_dir.offset(old_pos);
         if !self.first_entry_directions.contains_key(&new_pos) {
             self.first_entry_directions.insert(new_pos, best_dir);
+        }
+        if self.path_from_root.last().cloned() == Some(new_pos) {
+            self.path_from_root.pop();
+        } else {
+            self.path_from_root.push(old_pos);
         }
 
         Ok(best_dir)
@@ -927,7 +946,7 @@ fn save_debug_image(name: &str, values: &Vec<f32>, size: (i32, i32)) -> Result<(
 
 fn main() -> Result<()> {
     let mut mazes_by_size = HashMap::new();
-    for size in 10..40 {
+    for size in 10..20 {
         let mazes: Vec<OfflineMaze> = serde_json::from_reader(BufReader::new(File::open(
             format!("mazes/mazes_{}.json", size),
         )?))?;
