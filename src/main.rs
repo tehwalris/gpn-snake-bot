@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::thread;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
@@ -136,6 +138,7 @@ enum ClientMessage {
 }
 
 struct GameReader<R: Read> {
+    on_pos: Box<dyn Fn(PosWithWalls) -> ()>,
     inner: BufReader<R>,
     line: String,
 }
@@ -149,8 +152,9 @@ fn parse_01_string(s: &str) -> Result<bool> {
 }
 
 impl<R: Read> GameReader<R> {
-    fn new(inner: R) -> GameReader<R> {
+    fn new(inner: R, on_pos: Box<dyn Fn(PosWithWalls) -> ()>) -> GameReader<R> {
         GameReader {
+            on_pos,
             inner: BufReader::new(inner),
             line: String::new(),
         }
@@ -185,14 +189,18 @@ impl<R: Read> GameReader<R> {
                 x: x.parse()?,
                 y: y.parse()?,
             }),
-            ["pos", x, y, top, right, bottom, left] => Ok(ServerMessage::Pos(PosWithWalls {
-                x: x.parse()?,
-                y: y.parse()?,
-                top: parse_01_string(top)?,
-                right: parse_01_string(right)?,
-                bottom: parse_01_string(bottom)?,
-                left: parse_01_string(left)?,
-            })),
+            ["pos", x, y, top, right, bottom, left] => {
+                let pos = PosWithWalls {
+                    x: x.parse()?,
+                    y: y.parse()?,
+                    top: parse_01_string(top)?,
+                    right: parse_01_string(right)?,
+                    bottom: parse_01_string(bottom)?,
+                    left: parse_01_string(left)?,
+                };
+                (self.on_pos)(pos.clone());
+                Ok(ServerMessage::Pos(pos))
+            }
             ["win", wins, losses] => Ok(ServerMessage::Win {
                 wins: wins.parse()?,
                 losses: losses.parse()?,
@@ -248,7 +256,7 @@ impl FirstPossibleStrategy {
 }
 
 impl Strategy for FirstPossibleStrategy {
-    fn start(&mut self, game_info: &GameInfo) -> () {}
+    fn start(&mut self, _game_info: &GameInfo) -> () {}
 
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         pos.possible_dirs()
@@ -267,7 +275,7 @@ impl RandomPossibleStrategy {
 }
 
 impl Strategy for RandomPossibleStrategy {
-    fn start(&mut self, game_info: &GameInfo) -> () {}
+    fn start(&mut self, _game_info: &GameInfo) -> () {}
 
     fn step(&mut self, pos: &PosWithWalls) -> Result<Direction> {
         if let Some(&dir) = pos.possible_dirs().choose(&mut thread_rng()) {
@@ -321,7 +329,7 @@ impl WeightedRandomStrategy {
 }
 
 impl Strategy for WeightedRandomStrategy {
-    fn start(&mut self, game_info: &GameInfo) -> () {}
+    fn start(&mut self, _game_info: &GameInfo) -> () {}
 
     fn step(&mut self, old_pos: &PosWithWalls) -> Result<Direction> {
         let possible_dirs = old_pos.possible_dirs();
@@ -570,6 +578,7 @@ struct ImprovedDFSStrategy<'a> {
     get_goal: Box<dyn Fn(&GameInfo) -> (i32, i32)>,
     goal: (i32, i32),
     inputs: HashMap<(i32, i32), PosWithWalls>,
+    shared_inputs: Arc<RwLock<HashMap<(i32, i32), PosWithWalls>>>,
     estimated_size: (i32, i32),
     mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
     first_entry_directions: HashMap<(i32, i32), Direction>,
@@ -580,11 +589,13 @@ impl<'a> ImprovedDFSStrategy<'a> {
     fn new(
         get_goal: Box<dyn Fn(&GameInfo) -> (i32, i32)>,
         mazes_by_size: &'a HashMap<usize, Vec<OfflineMaze>>,
+        shared_inputs: Arc<RwLock<HashMap<(i32, i32), PosWithWalls>>>,
     ) -> Self {
         Self {
             get_goal,
             goal: (-1, -1),
             inputs: HashMap::new(),
+            shared_inputs,
             estimated_size: (0, 0),
             mazes_by_size,
             first_entry_directions: HashMap::new(),
@@ -606,6 +617,12 @@ impl<'a> Strategy for ImprovedDFSStrategy<'a> {
         let mut possible_dirs = old_pos.possible_dirs();
         self.inputs.insert((old_pos.x, old_pos.y), old_pos.clone());
         let old_pos = (old_pos.x, old_pos.y);
+
+        if let Ok(shared_inputs) = self.shared_inputs.read() {
+            for (k, v) in shared_inputs.iter() {
+                self.inputs.insert(*k, v.clone());
+            }
+        }
 
         self.estimated_size = (
             i32::max(old_pos.1 + 1, self.estimated_size.0),
@@ -817,8 +834,9 @@ fn try_play(
 ) -> Result<()> {
     println!("connecting");
 
-    let usernames = [&base_username, "b0", "b1", "b2"];
+    let usernames = [&base_username, "b0", "b1", "b2", "b3"];
 
+    let shared_inputs = Arc::new(RwLock::new(HashMap::<(i32, i32), PosWithWalls>::new()));
     let mut handles = Vec::new();
     for (i, username) in usernames.into_iter().enumerate() {
         let host_port = host_port.clone();
@@ -826,22 +844,33 @@ fn try_play(
         let username_no_move = username.to_string();
         let password = password.clone();
         let mazes_by_size = mazes_by_size.clone();
+        let shared_inputs_1 = shared_inputs.clone();
+        let shared_inputs_2 = shared_inputs.clone();
         handles.push(thread::spawn(move || {
             let run = || -> Result<()> {
                 let stream = TcpStream::connect(host_port)?;
-                let mut reader = GameReader::new(&stream);
+                let mut reader = GameReader::new(
+                    &stream,
+                    Box::new(move |pos| {
+                        if i == 0 {
+                            return;
+                        }
+                        println!("got pos from worker {}: {:?}", i, pos);
+                        if let Ok(inputs) = shared_inputs_1.write().as_deref_mut() {
+                            inputs.insert((pos.x, pos.y), pos);
+                        }
+                    }),
+                );
                 let mut writer = GameWriter::new(&stream);
 
-                writer.write(&ClientMessage::Join {
-                    username: username,
-                    password: password,
-                })?;
+                writer.write(&ClientMessage::Join { username, password })?;
 
                 if i == 0 {
                     run_round(
                         ImprovedDFSStrategy::new(
                             Box::new(|game_info| (game_info.goal_x, game_info.goal_y)),
                             &mazes_by_size,
+                            shared_inputs_2,
                         ),
                         &mut reader,
                         &mut writer,
@@ -945,6 +974,12 @@ fn run_offline<
         let goal = get_goal(max_pos);
         let mut goal_reached = false;
         let mut strategy = make_strategy(goal);
+        strategy.start(&GameInfo {
+            width: size.0,
+            height: size.1,
+            goal_x: goal.0,
+            goal_y: goal.1,
+        });
         let mut pos = get_start_pos(max_pos);
         let mut steps_until_goal = 0;
         loop {
