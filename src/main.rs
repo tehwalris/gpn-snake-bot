@@ -272,11 +272,6 @@ impl Strategy for GetAwayFromItAllStrategy {
         }
         let best_target = best_target.unwrap().0;
 
-        println!(
-            "DEBUG best_target {:?} player_pos {:?}",
-            best_target, player_pos
-        );
-
         let best_direction = shortest_path::shortest_path_next_direction(
             board.board_size(),
             &occupied_mask,

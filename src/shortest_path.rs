@@ -21,7 +21,7 @@ pub fn shortest_path_next_direction(
                 let new_pos = direction.offset_pos(pos, size);
                 let new_i = new_pos.1 * width + new_pos.0;
                 if (!occupied_mask[i] || pos == start_pos)
-                    && (!occupied_mask[new_i] || new_pos == target_pos)
+                    && (!occupied_mask[new_i] || new_pos == start_pos)
                 {
                     Some((i, new_i))
                 } else {
