@@ -248,10 +248,14 @@ impl Strategy for GetAwayFromItAllStrategy {
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
         let occupied_mask = board.occupied_mask();
+        let conservative_occupied_mask = board.conservative_occupied_mask(self.player_id);
         let distances = calculate_distances(board.board_size(), &occupied_mask);
         assert_eq!(distances.len(), occupied_mask.len());
-        let reachable_mask =
-            reachability::calculate_reachable(board.board_size(), &occupied_mask, player_pos);
+        let reachable_mask = reachability::calculate_reachable(
+            board.board_size(),
+            &conservative_occupied_mask,
+            player_pos,
+        );
         assert_eq!(reachable_mask.len(), occupied_mask.len());
 
         let mut best_target: Option<((usize, usize), usize)> = None;
@@ -274,7 +278,7 @@ impl Strategy for GetAwayFromItAllStrategy {
 
         let best_direction = shortest_path::shortest_path_next_direction(
             board.board_size(),
-            &occupied_mask,
+            &conservative_occupied_mask,
             player_pos,
             best_target,
         )

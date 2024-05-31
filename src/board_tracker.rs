@@ -73,4 +73,21 @@ impl BoardTracker {
             .map(|&player_id| player_id != Self::NO_PLAYER)
             .collect()
     }
+
+    pub fn conservative_occupied_mask(&self, own_player: usize) -> Vec<bool> {
+        let mut mask = self.occupied_mask();
+        for pos in self
+            .latest_pos_by_player
+            .iter()
+            .enumerate()
+            .filter(|(player_id, _)| *player_id != own_player)
+            .filter_map(|(_, pos)| *pos)
+        {
+            for direction in Direction::all_directions() {
+                let new_pos = self.offset_pos(pos, direction);
+                mask[new_pos.1 * self.width + new_pos.0] = true;
+            }
+        }
+        mask
+    }
 }
