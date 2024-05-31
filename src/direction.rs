@@ -41,6 +41,15 @@ impl Direction {
             % height;
         (x, y)
     }
+
+    pub fn all_directions() -> [Direction; 4] {
+        [
+            Direction::Up,
+            Direction::Right,
+            Direction::Down,
+            Direction::Left,
+        ]
+    }
 }
 
 impl fmt::Display for Direction {

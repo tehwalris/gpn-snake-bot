@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
 use direction::Direction;
+use distance::calculate_distances;
 use rand::prelude::SliceRandom;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
@@ -12,6 +13,9 @@ use std::{
 
 mod board_tracker;
 mod direction;
+mod distance;
+mod reachability;
+mod shortest_path;
 
 #[derive(Debug)]
 struct GameInfo {
@@ -192,12 +196,7 @@ impl Strategy for NoCrashRandomStrategy {
         let board = self.board.as_mut().unwrap();
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
-        let mut directions = vec![
-            Direction::Up,
-            Direction::Right,
-            Direction::Down,
-            Direction::Left,
-        ];
+        let mut directions = Direction::all_directions().to_vec();
         directions.shuffle(&mut rand::thread_rng());
 
         for direction in directions {
@@ -209,6 +208,84 @@ impl Strategy for NoCrashRandomStrategy {
         }
 
         Ok(Direction::Down)
+    }
+
+    fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
+        self.board.as_mut().unwrap().record_pos(player_id, pos);
+    }
+
+    fn record_death(&mut self, player_id: usize) {
+        self.board.as_mut().unwrap().record_death(player_id);
+    }
+}
+
+struct GetAwayFromItAllStrategy {
+    board: Option<board_tracker::BoardTracker>,
+    player_id: usize,
+}
+
+impl GetAwayFromItAllStrategy {
+    fn new() -> Self {
+        Self {
+            board: None,
+            player_id: 0,
+        }
+    }
+}
+
+impl Strategy for GetAwayFromItAllStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        self.board = Some(board_tracker::BoardTracker::new(
+            game_info.width as usize,
+            game_info.height as usize,
+        ));
+        self.player_id = game_info.player_id as usize;
+    }
+
+    fn step(&mut self) -> Result<Direction> {
+        let board = self.board.as_mut().unwrap();
+        let (width, _height) = board.board_size();
+        let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
+
+        let occupied_mask = board.occupied_mask();
+        let distances = calculate_distances(board.board_size(), &occupied_mask);
+        assert_eq!(distances.len(), occupied_mask.len());
+        let reachable_mask =
+            reachability::calculate_reachable(board.board_size(), &occupied_mask, player_pos);
+        assert_eq!(reachable_mask.len(), occupied_mask.len());
+
+        let mut best_target: Option<((usize, usize), usize)> = None;
+        for y in 0..width {
+            for x in 0..width {
+                let i = y * width + x;
+                if (x, y) != player_pos
+                    && reachable_mask[i]
+                    && (best_target.is_none() || distances[i] > distances[best_target.unwrap().1])
+                {
+                    best_target = Some(((x, y), i));
+                }
+            }
+        }
+        if best_target.is_none() {
+            println!("WARNING no best target found");
+            return Ok(Direction::Down);
+        }
+        let best_target = best_target.unwrap().0;
+
+        println!(
+            "DEBUG best_target {:?} player_pos {:?}",
+            best_target, player_pos
+        );
+
+        let best_direction = shortest_path::shortest_path_next_direction(
+            board.board_size(),
+            &occupied_mask,
+            player_pos,
+            best_target,
+        )
+        .unwrap();
+
+        Ok(best_direction)
     }
 
     fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
@@ -283,7 +360,7 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    run_round(NoCrashRandomStrategy::new(), &mut reader, &mut writer)?;
+    run_round(GetAwayFromItAllStrategy::new(), &mut reader, &mut writer)?;
 
     Ok(())
 }

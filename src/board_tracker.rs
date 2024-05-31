@@ -20,6 +20,10 @@ impl BoardTracker {
         }
     }
 
+    pub fn board_size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
     pub fn get_cell_player(&self, (x, y): (usize, usize)) -> Option<usize> {
         match self.board[y * self.width + x] {
             Self::NO_PLAYER => None,
@@ -61,5 +65,12 @@ impl BoardTracker {
 
     pub fn offset_pos(&self, pos: (usize, usize), direction: Direction) -> (usize, usize) {
         direction.offset_pos(pos, (self.width, self.height))
+    }
+
+    pub fn occupied_mask(&self) -> Vec<bool> {
+        self.board
+            .iter()
+            .map(|&player_id| player_id != Self::NO_PLAYER)
+            .collect()
     }
 }
