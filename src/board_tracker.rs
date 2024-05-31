@@ -1,4 +1,4 @@
-use crate::Direction;
+use crate::direction::Direction;
 
 #[derive(Clone)]
 pub struct BoardTracker {
@@ -60,23 +60,6 @@ impl BoardTracker {
     }
 
     pub fn offset_pos(&self, pos: (usize, usize), direction: Direction) -> (usize, usize) {
-        let (x, y) = pos;
-        let x = (x as isize
-            + match direction {
-                Direction::Left => -1,
-                Direction::Right => 1,
-                _ => 0,
-            }
-            + self.width as isize) as usize
-            % self.width;
-        let y = (y as isize
-            + match direction {
-                Direction::Up => -1,
-                Direction::Down => 1,
-                _ => 0,
-            }
-            + self.height as isize) as usize
-            % self.height;
-        (x, y)
+        direction.offset_pos(pos, (self.width, self.height))
     }
 }

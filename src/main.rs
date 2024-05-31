@@ -3,44 +3,15 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
+use direction::Direction;
 use rand::prelude::SliceRandom;
-use std::fmt;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
 };
 
 mod board_tracker;
-
-#[derive(Debug, Clone, Copy)]
-enum Direction {
-    Up,
-    Right,
-    Down,
-    Left,
-}
-
-impl Direction {
-    fn reverse(&self) -> Direction {
-        match self {
-            Direction::Up => Direction::Down,
-            Direction::Right => Direction::Left,
-            Direction::Down => Direction::Up,
-            Direction::Left => Direction::Right,
-        }
-    }
-}
-
-impl fmt::Display for Direction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Direction::Up => "up",
-            Direction::Right => "right",
-            Direction::Down => "down",
-            Direction::Left => "left",
-        })
-    }
-}
+mod direction;
 
 #[derive(Debug)]
 struct GameInfo {
