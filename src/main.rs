@@ -3,11 +3,14 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use core::time;
+use rand::prelude::SliceRandom;
 use std::fmt;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
 };
+
+mod board_tracker;
 
 #[derive(Debug, Clone, Copy)]
 enum Direction {
@@ -167,21 +170,82 @@ impl<W: Write> GameWriter<W> {
 trait Strategy: Sized {
     fn start(&mut self, game_info: &GameInfo) -> ();
     fn step(&mut self) -> Result<Direction>;
+    fn record_pos(&mut self, player_id: usize, pos: (usize, usize));
+    fn record_death(&mut self, player_id: usize);
 }
 
-struct FirstPossibleStrategy {}
+struct AlwaysDownStrategy {}
 
-impl FirstPossibleStrategy {
+impl AlwaysDownStrategy {
     fn new() -> Self {
         Self {}
     }
 }
 
-impl Strategy for FirstPossibleStrategy {
+impl Strategy for AlwaysDownStrategy {
     fn start(&mut self, _game_info: &GameInfo) -> () {}
 
     fn step(&mut self) -> Result<Direction> {
         Ok(Direction::Down)
+    }
+
+    fn record_pos(&mut self, _player_id: usize, _pos: (usize, usize)) {}
+
+    fn record_death(&mut self, _player_id: usize) {}
+}
+
+struct NoCrashRandomStrategy {
+    board: Option<board_tracker::BoardTracker>,
+    player_id: usize,
+}
+
+impl NoCrashRandomStrategy {
+    fn new() -> Self {
+        Self {
+            board: None,
+            player_id: 0,
+        }
+    }
+}
+
+impl Strategy for NoCrashRandomStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        self.board = Some(board_tracker::BoardTracker::new(
+            game_info.width as usize,
+            game_info.height as usize,
+        ));
+        self.player_id = game_info.player_id as usize;
+    }
+
+    fn step(&mut self) -> Result<Direction> {
+        let board = self.board.as_mut().unwrap();
+        let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
+
+        let mut directions = vec![
+            Direction::Up,
+            Direction::Right,
+            Direction::Down,
+            Direction::Left,
+        ];
+        directions.shuffle(&mut rand::thread_rng());
+
+        for direction in directions {
+            let new_player_pos = board.offset_pos(player_pos, direction);
+
+            if board.get_cell_player(new_player_pos).is_none() {
+                return Ok(direction);
+            }
+        }
+
+        Ok(Direction::Down)
+    }
+
+    fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
+        self.board.as_mut().unwrap().record_pos(player_id, pos);
+    }
+
+    fn record_death(&mut self, player_id: usize) {
+        self.board.as_mut().unwrap().record_death(player_id);
     }
 }
 
@@ -222,9 +286,16 @@ fn run_round<S: Strategy, R: Read, W: Write>(
             ServerMessage::Game { .. } => (),
             ServerMessage::Motd { .. } => (),
             ServerMessage::Error { .. } => return Ok(()),
-            ServerMessage::Pos { .. } => (),
+            ServerMessage::Pos { player_id, x, y } => strategy.record_pos(
+                player_id.try_into().unwrap(),
+                (x.try_into().unwrap(), y.try_into().unwrap()),
+            ),
             ServerMessage::Player { .. } => (),
-            ServerMessage::Die { .. } => (),
+            ServerMessage::Die { player_ids } => {
+                for player_id in player_ids {
+                    strategy.record_death(player_id.try_into().unwrap());
+                }
+            }
             ServerMessage::Message { .. } => (),
             ServerMessage::Win { .. } => return Ok(()),
             ServerMessage::Lose { .. } => return Ok(()),
@@ -241,7 +312,7 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    run_round(FirstPossibleStrategy::new(), &mut reader, &mut writer)?;
+    run_round(NoCrashRandomStrategy::new(), &mut reader, &mut writer)?;
 
     Ok(())
 }
