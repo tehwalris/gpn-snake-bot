@@ -86,13 +86,15 @@ impl BoardTracker {
         duplicate
     }
 
-    pub fn record_death(&mut self, player_id: usize) {
+    pub fn record_death(&mut self, player_id: usize, clear: bool) {
         let player = self.get_or_create_internal_player_mut(player_id);
         player.dead = true;
 
-        for i in 0..self.board.len() {
-            if self.board[i] == player_id {
-                self.board[i] = Self::NO_PLAYER;
+        if clear {
+            for i in 0..self.board.len() {
+                if self.board[i] == player_id {
+                    self.board[i] = Self::NO_PLAYER;
+                }
             }
         }
     }

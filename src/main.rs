@@ -316,17 +316,25 @@ struct PlayoutAfterNextStrategy {
     mode: PlayoutAfterNextStrategyMode,
     max_steps: usize,
     win_multiplier: usize,
+    clear_on_death_prob: f32,
 }
 
 impl PlayoutAfterNextStrategy {
-    fn new(mode: PlayoutAfterNextStrategyMode, max_steps: usize, win_multiplier: usize) -> Self {
+    fn new(
+        mode: PlayoutAfterNextStrategyMode,
+        max_steps: usize,
+        win_multiplier: usize,
+        clear_on_death_prob: f32,
+    ) -> Self {
         assert!(max_steps > 0);
         assert!(win_multiplier > 0);
+        assert!(0.0 <= clear_on_death_prob && clear_on_death_prob <= 1.0);
         Self {
             player_id: 0,
             mode,
             max_steps,
             win_multiplier,
+            clear_on_death_prob,
         }
     }
 }
@@ -415,6 +423,7 @@ impl Strategy for PlayoutAfterNextStrategy {
                 strategies_by_player,
                 self.player_id,
                 self.max_steps,
+                rand::random::<f32>() < self.clear_on_death_prob,
             );
 
             let score_survive = playout_result.survived_steps as f64;
@@ -579,7 +588,7 @@ fn run_round<S: Strategy, R: Read, W: Write>(
             ServerMessage::Player { .. } => (),
             ServerMessage::Die { player_ids } => {
                 for player_id in player_ids {
-                    board.record_death(player_id.try_into().unwrap());
+                    board.record_death(player_id.try_into().unwrap(), true);
                 }
             }
             ServerMessage::Message { .. } => (),
@@ -603,8 +612,10 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
     //     PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::WinProbability, 50, 1),
     //     0.5,
     // );
+    // let strategy =
+    //     PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurviveMoreThanWin, 80, 1);
     let strategy =
-        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurviveMoreThanWin, 80, 1);
+        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::WinProbability, 120, 1, 0.5);
     run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())

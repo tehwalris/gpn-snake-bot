@@ -15,6 +15,7 @@ pub fn run_playout(
     mut strategies_by_player: Vec<Box<dyn Strategy>>,
     own_player_id: usize,
     max_steps: usize,
+    clear_on_death: bool,
 ) -> PlayoutResult {
     assert!(!board.is_dead(own_player_id));
     assert!(max_steps > 0);
@@ -52,7 +53,7 @@ pub fn run_playout(
                 if next_occupied_count[new_i] == 1 {
                     board.record_pos(player_id, new_pos);
                 } else {
-                    board.record_death(player_id);
+                    board.record_death(player_id, clear_on_death);
                 }
             }
         }
