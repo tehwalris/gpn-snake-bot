@@ -404,10 +404,11 @@ impl Strategy for PlayoutAfterNextStrategy {
                 self.player_id,
                 self.max_steps,
             );
-            let mut playout_score = playout_result.beaten_players;
-            if playout_result.did_win {
-                playout_score *= self.win_multiplier;
-            }
+            // let mut playout_score = playout_result.beaten_players;
+            // if playout_result.did_win {
+            //     playout_score *= self.win_multiplier;
+            // }
+            let playout_score = playout_result.survived_steps;
 
             let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
             stats.score += playout_score;
@@ -449,7 +450,9 @@ fn run_round<S: Strategy, R: Read, W: Write>(
                 );
                 break board;
             }
-            ServerMessage::Error { .. } => return Ok(()),
+            ServerMessage::Error { message } => {
+                return Err(anyhow!("error: {}", message));
+            }
             ServerMessage::Motd { .. } => (),
             ServerMessage::Win { .. } => return Ok(()),
             ServerMessage::Lose { .. } => return Ok(()),
@@ -475,7 +478,9 @@ fn run_round<S: Strategy, R: Read, W: Write>(
             }
             ServerMessage::Game { .. } => (),
             ServerMessage::Motd { .. } => (),
-            ServerMessage::Error { .. } => return Ok(()),
+            ServerMessage::Error { message } => {
+                return Err(anyhow!("error: {}", message));
+            }
             ServerMessage::Pos { player_id, x, y } => {
                 board.record_pos(
                     player_id.try_into().unwrap(),
@@ -504,7 +509,7 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    let strategy = PlayoutAfterNextStrategy::new(10, 10, 5);
+    let strategy = PlayoutAfterNextStrategy::new(300, 300, 1);
     run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())
