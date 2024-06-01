@@ -308,6 +308,7 @@ impl Strategy for GetAwayFromItAllStrategy {
 enum PlayoutAfterNextStrategyMode {
     WinProbability,
     SurvivedSteps,
+    SurviveMoreThanWin,
 }
 
 struct PlayoutAfterNextStrategy {
@@ -366,17 +367,17 @@ impl Strategy for PlayoutAfterNextStrategy {
         #[derive(Clone, Debug)]
         struct DirectionStats {
             direction: Direction,
-            score: f64,
+            score_survive: f64,
+            score_win: f64,
             playouts: usize,
-            mean_score: f64,
         }
         let mut stats_by_direction: Vec<_> = no_crash_directions
             .iter()
             .map(|&direction| DirectionStats {
                 direction,
-                score: 0.0,
+                score_survive: 0.0,
+                score_win: 0.0,
                 playouts: 0,
-                mean_score: 0.0,
             })
             .collect();
 
@@ -416,37 +417,63 @@ impl Strategy for PlayoutAfterNextStrategy {
                 self.max_steps,
             );
 
-            let playout_score = match self.mode {
-                PlayoutAfterNextStrategyMode::WinProbability => {
-                    if playout_result.did_win {
-                        1.0
-                    } else if playout_result.did_die {
-                        0.0
-                    } else {
-                        assert!(playout_result.remaining_players > 0);
-                        1.0 / (playout_result.remaining_players as f64)
-                    }
-                }
-                PlayoutAfterNextStrategyMode::SurvivedSteps => playout_result.survived_steps as f64,
+            let score_survive = playout_result.survived_steps as f64;
+            let score_win = if playout_result.did_win {
+                1.0
+            } else if playout_result.did_die {
+                0.0
+            } else {
+                assert!(playout_result.remaining_players > 0);
+                1.0 / (playout_result.remaining_players as f64)
             };
 
             let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
-            stats.score += playout_score;
+            stats.score_survive += score_survive;
+            stats.score_win += score_win;
             stats.playouts += 1;
         }
 
         for stats in stats_by_direction.iter_mut() {
             if stats.playouts > 0 {
-                stats.mean_score = stats.score as f64 / stats.playouts as f64;
+                stats.score_survive /= stats.playouts as f64;
+                stats.score_win /= stats.playouts as f64;
             }
             println!("{:?}", stats);
         }
-        let best_direction = stats_by_direction
-            .iter()
-            .max_by(|a, b| a.mean_score.partial_cmp(&b.mean_score).unwrap())
-            .unwrap()
-            .direction;
-        best_direction
+
+        match self.mode {
+            PlayoutAfterNextStrategyMode::SurviveMoreThanWin => {
+                let good_enough_survive_thresh = 20.0;
+                let good_enough_survive_stats = stats_by_direction
+                    .iter()
+                    .filter(|stats| stats.score_survive >= good_enough_survive_thresh)
+                    .max_by(|a, b| a.score_win.partial_cmp(&b.score_win).unwrap());
+                if let Some(good_enough_survive_stats) = good_enough_survive_stats {
+                    good_enough_survive_stats.direction
+                } else {
+                    // HACK not mean but we uniform sample anyway
+                    stats_by_direction
+                        .iter()
+                        .max_by(|a, b| a.score_survive.partial_cmp(&b.score_survive).unwrap())
+                        .unwrap()
+                        .direction
+                }
+            }
+            PlayoutAfterNextStrategyMode::WinProbability => {
+                stats_by_direction
+                    .iter()
+                    .max_by(|a, b| a.score_win.partial_cmp(&b.score_win).unwrap())
+                    .unwrap()
+                    .direction
+            }
+            PlayoutAfterNextStrategyMode::SurvivedSteps => {
+                stats_by_direction
+                    .iter()
+                    .max_by(|a, b| a.score_survive.partial_cmp(&b.score_survive).unwrap())
+                    .unwrap()
+                    .direction
+            }
+        }
     }
 }
 
@@ -571,11 +598,13 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    let strategy = SeparateEarlyLateStrategy::new(
-        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurvivedSteps, 150, 1),
-        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::WinProbability, 50, 1),
-        0.5,
-    );
+    // let strategy = SeparateEarlyLateStrategy::new(
+    //     PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurvivedSteps, 150, 1),
+    //     PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::WinProbability, 50, 1),
+    //     0.5,
+    // );
+    let strategy =
+        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurviveMoreThanWin, 80, 1);
     run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())
