@@ -409,7 +409,7 @@ impl Strategy for PlayoutAfterNextStrategy {
                 self.max_steps,
             );
             // let mut playout_score = playout_result.beaten_players;
-            // if playout_result.did_win {
+            // // if playout_result.did_win {
             //     playout_score *= self.win_multiplier;
             // }
 
