@@ -262,8 +262,11 @@ impl Strategy for GetAwayFromItAllStrategy {
         for y in 0..width {
             for x in 0..width {
                 let i = y * width + x;
+                let manhattan_distance_from_player = (player_pos.0 as isize - x as isize).abs()
+                    + (player_pos.1 as isize - y as isize).abs();
                 if (x, y) != player_pos
                     && reachable_mask[i]
+                    && manhattan_distance_from_player > 8
                     && (best_target.is_none() || distances[i] > distances[best_target.unwrap().1])
                 {
                     best_target = Some(((x, y), i));
@@ -272,6 +275,19 @@ impl Strategy for GetAwayFromItAllStrategy {
         }
         if best_target.is_none() {
             println!("WARNING no best target found");
+
+            let mut directions = Direction::all_directions().to_vec();
+            directions.shuffle(&mut rand::thread_rng());
+
+            for direction in directions {
+                let new_player_pos = board.offset_pos(player_pos, direction);
+
+                if board.get_cell_player(new_player_pos).is_none() {
+                    return Ok(direction);
+                }
+            }
+
+            println!("WARNING no way to survive");
             return Ok(Direction::Down);
         }
         let best_target = best_target.unwrap().0;
