@@ -2,6 +2,7 @@
 
 use anyhow::anyhow;
 use anyhow::Result;
+use board_tracker::BoardTracker;
 use core::time;
 use direction::Direction;
 use distance::calculate_distances;
@@ -143,11 +144,9 @@ impl<W: Write> GameWriter<W> {
     }
 }
 
-trait Strategy: Sized {
+trait Strategy {
     fn start(&mut self, game_info: &GameInfo) -> ();
-    fn step(&mut self) -> Direction;
-    fn record_pos(&mut self, player_id: usize, pos: (usize, usize));
-    fn record_death(&mut self, player_id: usize);
+    fn step(&mut self, board: &BoardTracker) -> Direction;
 }
 
 struct AlwaysDownStrategy {}
@@ -159,15 +158,11 @@ impl AlwaysDownStrategy {
 }
 
 impl Strategy for AlwaysDownStrategy {
-    fn start(&mut self, _game_info: &GameInfo) -> () {}
+    fn start(&mut self, game_info: &GameInfo) -> () {}
 
-    fn step(&mut self) -> Direction {
+    fn step(&mut self, board: &BoardTracker) -> Direction {
         Direction::Down
     }
-
-    fn record_pos(&mut self, _player_id: usize, _pos: (usize, usize)) {}
-
-    fn record_death(&mut self, _player_id: usize) {}
 }
 
 struct NoCrashRandomStrategy {
@@ -193,8 +188,7 @@ impl Strategy for NoCrashRandomStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self) -> Direction {
-        let board = self.board.as_mut().unwrap();
+    fn step(&mut self, board: &BoardTracker) -> Direction {
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
         let mut directions = Direction::all_directions().to_vec();
@@ -209,14 +203,6 @@ impl Strategy for NoCrashRandomStrategy {
         }
 
         Direction::Down
-    }
-
-    fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
-        self.board.as_mut().unwrap().record_pos(player_id, pos);
-    }
-
-    fn record_death(&mut self, player_id: usize) {
-        self.board.as_mut().unwrap().record_death(player_id);
     }
 }
 
@@ -243,7 +229,7 @@ impl Strategy for GetAwayFromItAllStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self) -> Direction {
+    fn step(&mut self, board: &BoardTracker) -> Direction {
         let board = self.board.as_mut().unwrap();
         let (width, _height) = board.board_size();
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
@@ -300,14 +286,6 @@ impl Strategy for GetAwayFromItAllStrategy {
 
         best_direction
     }
-
-    fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
-        self.board.as_mut().unwrap().record_pos(player_id, pos);
-    }
-
-    fn record_death(&mut self, player_id: usize) {
-        self.board.as_mut().unwrap().record_death(player_id);
-    }
 }
 
 fn run_round<S: Strategy, R: Read, W: Write>(
@@ -317,14 +295,18 @@ fn run_round<S: Strategy, R: Read, W: Write>(
 ) -> Result<()> {
     println!("waiting for next round");
 
-    loop {
+    let mut board = loop {
         let msg = reader.read()?;
         println!("{:?}", msg);
 
         match msg {
             ServerMessage::Game { message } => {
                 strategy.start(&message);
-                break;
+                let board = BoardTracker::new(
+                    message.width.try_into().unwrap(),
+                    message.height.try_into().unwrap(),
+                );
+                break board;
             }
             ServerMessage::Error { .. } => return Ok(()),
             ServerMessage::Motd { .. } => (),
@@ -332,7 +314,7 @@ fn run_round<S: Strategy, R: Read, W: Write>(
             ServerMessage::Lose { .. } => return Ok(()),
             _ => (),
         };
-    }
+    };
 
     loop {
         let msg = reader.read()?;
@@ -340,21 +322,23 @@ fn run_round<S: Strategy, R: Read, W: Write>(
 
         match msg {
             ServerMessage::Tick => {
-                let direction = strategy.step();
+                let direction = strategy.step(&board);
                 println!("moving {}", direction);
                 writer.write(&ClientMessage::Move { direction })?;
             }
             ServerMessage::Game { .. } => (),
             ServerMessage::Motd { .. } => (),
             ServerMessage::Error { .. } => return Ok(()),
-            ServerMessage::Pos { player_id, x, y } => strategy.record_pos(
-                player_id.try_into().unwrap(),
-                (x.try_into().unwrap(), y.try_into().unwrap()),
-            ),
+            ServerMessage::Pos { player_id, x, y } => {
+                board.record_pos(
+                    player_id.try_into().unwrap(),
+                    (x.try_into().unwrap(), y.try_into().unwrap()),
+                );
+            }
             ServerMessage::Player { .. } => (),
             ServerMessage::Die { player_ids } => {
                 for player_id in player_ids {
-                    strategy.record_death(player_id.try_into().unwrap());
+                    board.record_death(player_id.try_into().unwrap());
                 }
             }
             ServerMessage::Message { .. } => (),
