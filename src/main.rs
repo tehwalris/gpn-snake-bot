@@ -14,6 +14,7 @@ use std::{
 mod board_tracker;
 mod direction;
 mod distance;
+mod playout;
 mod reachability;
 mod shortest_path;
 
@@ -262,11 +263,8 @@ impl Strategy for GetAwayFromItAllStrategy {
         for y in 0..width {
             for x in 0..width {
                 let i = y * width + x;
-                let manhattan_distance_from_player = (player_pos.0 as isize - x as isize).abs()
-                    + (player_pos.1 as isize - y as isize).abs();
                 if (x, y) != player_pos
                     && reachable_mask[i]
-                    && manhattan_distance_from_player > 8
                     && (best_target.is_none() || distances[i] > distances[best_target.unwrap().1])
                 {
                     best_target = Some(((x, y), i));
