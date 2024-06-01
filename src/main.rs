@@ -144,7 +144,7 @@ impl<W: Write> GameWriter<W> {
 
 trait Strategy: Sized {
     fn start(&mut self, game_info: &GameInfo) -> ();
-    fn step(&mut self) -> Result<Direction>;
+    fn step(&mut self) -> Direction;
     fn record_pos(&mut self, player_id: usize, pos: (usize, usize));
     fn record_death(&mut self, player_id: usize);
 }
@@ -160,8 +160,8 @@ impl AlwaysDownStrategy {
 impl Strategy for AlwaysDownStrategy {
     fn start(&mut self, _game_info: &GameInfo) -> () {}
 
-    fn step(&mut self) -> Result<Direction> {
-        Ok(Direction::Down)
+    fn step(&mut self) -> Direction {
+        Direction::Down
     }
 
     fn record_pos(&mut self, _player_id: usize, _pos: (usize, usize)) {}
@@ -192,7 +192,7 @@ impl Strategy for NoCrashRandomStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self) -> Result<Direction> {
+    fn step(&mut self) -> Direction {
         let board = self.board.as_mut().unwrap();
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
@@ -203,11 +203,11 @@ impl Strategy for NoCrashRandomStrategy {
             let new_player_pos = board.offset_pos(player_pos, direction);
 
             if board.get_cell_player(new_player_pos).is_none() {
-                return Ok(direction);
+                return direction;
             }
         }
 
-        Ok(Direction::Down)
+        Direction::Down
     }
 
     fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
@@ -242,7 +242,7 @@ impl Strategy for GetAwayFromItAllStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self) -> Result<Direction> {
+    fn step(&mut self) -> Direction {
         let board = self.board.as_mut().unwrap();
         let (width, _height) = board.board_size();
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
@@ -283,12 +283,12 @@ impl Strategy for GetAwayFromItAllStrategy {
                 let new_player_pos = board.offset_pos(player_pos, direction);
 
                 if board.get_cell_player(new_player_pos).is_none() {
-                    return Ok(direction);
+                    return direction;
                 }
             }
 
             println!("WARNING no way to survive");
-            return Ok(Direction::Down);
+            return Direction::Down;
         }
         let best_target = best_target.unwrap().0;
 
@@ -300,7 +300,7 @@ impl Strategy for GetAwayFromItAllStrategy {
         )
         .unwrap();
 
-        Ok(best_direction)
+        best_direction
     }
 
     fn record_pos(&mut self, player_id: usize, pos: (usize, usize)) {
@@ -342,7 +342,7 @@ fn run_round<S: Strategy, R: Read, W: Write>(
 
         match msg {
             ServerMessage::Tick => {
-                let direction = strategy.step()?;
+                let direction = strategy.step();
                 println!("moving {}", direction);
                 writer.write(&ClientMessage::Move { direction })?;
             }
