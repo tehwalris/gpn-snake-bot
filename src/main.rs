@@ -445,7 +445,7 @@ fn run_round<S: Strategy, R: Read, W: Write>(
 ) -> Result<()> {
     println!("waiting for next round");
 
-    let mut board = loop {
+    let (mut board, mut last_tick_at) = loop {
         let msg = reader.read()?;
         println!("{:?}", msg);
 
@@ -456,7 +456,7 @@ fn run_round<S: Strategy, R: Read, W: Write>(
                     message.width.try_into().unwrap(),
                     message.height.try_into().unwrap(),
                 );
-                break board;
+                break (board, Instant::now());
             }
             ServerMessage::Error { message } => {
                 return Err(anyhow!("error: {}", message));
@@ -474,13 +474,16 @@ fn run_round<S: Strategy, R: Read, W: Write>(
 
         match msg {
             ServerMessage::Tick => {
+                let tick_duration = last_tick_at.elapsed();
+                last_tick_at = Instant::now();
                 let before_step = Instant::now();
                 let direction = strategy.step(&board);
                 let step_duration = before_step.elapsed();
                 println!(
-                    "--- moving {} ({} ms) ---\n",
+                    "--- moving {} ({} ms calc, {} ms since last tick) ---\n",
                     direction,
-                    step_duration.as_millis()
+                    step_duration.as_millis(),
+                    tick_duration.as_millis()
                 );
                 writer.write(&ClientMessage::Move { direction })?;
             }
@@ -517,7 +520,7 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    let strategy = PlayoutAfterNextStrategy::new(300, 300, 1);
+    let strategy = PlayoutAfterNextStrategy::new(1000, 50, 1);
     run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())
