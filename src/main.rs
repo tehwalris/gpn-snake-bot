@@ -415,16 +415,16 @@ impl Strategy for PlayoutAfterNextStrategy {
 
             // let playout_score = playout_result.survived_steps;
 
-            // let playout_score: f64 = if playout_result.did_win {
-            //     1.0
-            // } else if playout_result.did_die {
-            //     0.0
-            // } else {
-            //     assert!(playout_result.remaining_players > 0);
-            //     1.0 / (playout_result.remaining_players as f64)
-            // };
+            let playout_score: f64 = if playout_result.did_win {
+                1.0
+            } else if playout_result.did_die {
+                0.0
+            } else {
+                assert!(playout_result.remaining_players > 0);
+                1.0 / (playout_result.remaining_players as f64)
+            };
 
-            let playout_score = (playout_result.beaten_players - board.count_dead()) as f64;
+            // let playout_score = (playout_result.beaten_players - board.count_dead()) as f64;
 
             let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
             stats.score += playout_score;
