@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{board_tracker::BoardTracker, Strategy};
 
 pub struct PlayoutResult {
@@ -29,7 +31,7 @@ pub fn run_playout(
                 if board.is_dead(player_id) {
                     None
                 } else {
-                    let direction = strategy.step(&board);
+                    let direction = strategy.step(&board, Duration::from_secs(0));
                     let old_pos = board.get_player_latest_pos(player_id).unwrap();
                     let new_pos = board.offset_pos(old_pos, direction);
                     Some(new_pos)

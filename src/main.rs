@@ -7,6 +7,7 @@ use core::time;
 use direction::Direction;
 use distance::calculate_distances;
 use rand::prelude::SliceRandom;
+use std::time::Duration;
 use std::time::Instant;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
@@ -147,7 +148,7 @@ impl<W: Write> GameWriter<W> {
 
 trait Strategy {
     fn start(&mut self, game_info: &GameInfo) -> ();
-    fn step(&mut self, board: &BoardTracker) -> Direction;
+    fn step(&mut self, board: &BoardTracker, time_budget: Duration) -> Direction;
 }
 
 struct AlwaysDownStrategy {}
@@ -161,7 +162,7 @@ impl AlwaysDownStrategy {
 impl Strategy for AlwaysDownStrategy {
     fn start(&mut self, _game_info: &GameInfo) -> () {}
 
-    fn step(&mut self, _board: &BoardTracker) -> Direction {
+    fn step(&mut self, _board: &BoardTracker, _time_budget: Duration) -> Direction {
         Direction::Down
     }
 }
@@ -181,7 +182,7 @@ impl Strategy for NoCrashRandomStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self, board: &BoardTracker) -> Direction {
+    fn step(&mut self, board: &BoardTracker, _time_budget: Duration) -> Direction {
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
         let mut directions = Direction::all_directions().to_vec();
@@ -221,9 +222,9 @@ impl<T: Strategy> Strategy for ConstantThenOtherStrategy<T> {
         self.other_strategy.start(game_info);
     }
 
-    fn step(&mut self, board: &BoardTracker) -> Direction {
+    fn step(&mut self, board: &BoardTracker, time_budget: Duration) -> Direction {
         if self.did_first_step {
-            self.other_strategy.step(board)
+            self.other_strategy.step(board, time_budget)
         } else {
             self.did_first_step = true;
             self.first_direction
@@ -246,7 +247,7 @@ impl Strategy for GetAwayFromItAllStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self, board: &BoardTracker) -> Direction {
+    fn step(&mut self, board: &BoardTracker, _time_budget: Duration) -> Direction {
         let (width, _height) = board.board_size();
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
@@ -306,19 +307,16 @@ impl Strategy for GetAwayFromItAllStrategy {
 
 struct PlayoutAfterNextStrategy {
     player_id: usize,
-    n_playouts: usize,
     max_steps: usize,
     win_multiplier: usize,
 }
 
 impl PlayoutAfterNextStrategy {
-    fn new(n_playouts: usize, max_steps: usize, win_multiplier: usize) -> Self {
-        assert!(n_playouts > 0);
+    fn new(max_steps: usize, win_multiplier: usize) -> Self {
         assert!(max_steps > 0);
         assert!(win_multiplier > 0);
         Self {
             player_id: 0,
-            n_playouts,
             max_steps,
             win_multiplier,
         }
@@ -330,7 +328,9 @@ impl Strategy for PlayoutAfterNextStrategy {
         self.player_id = game_info.player_id as usize;
     }
 
-    fn step(&mut self, board: &BoardTracker) -> Direction {
+    fn step(&mut self, board: &BoardTracker, time_budget: Duration) -> Direction {
+        let step_start = Instant::now();
+
         let n_players = board.count_seen();
         assert!(n_players > 0);
         assert!(self.player_id < n_players);
@@ -373,7 +373,11 @@ impl Strategy for PlayoutAfterNextStrategy {
             })
             .collect();
 
-        for i_playout in 0..self.n_playouts {
+        for i_playout in 0.. {
+            if step_start.elapsed() > time_budget {
+                break;
+            }
+
             let own_playout_start_direction =
                 no_crash_directions[i_playout % no_crash_directions.len()];
 
@@ -480,13 +484,16 @@ fn run_round<S: Strategy, R: Read, W: Write>(
             ServerMessage::Tick => {
                 let tick_duration = last_tick_at.elapsed();
                 last_tick_at = Instant::now();
+                let time_budget =
+                    Duration::saturating_sub(tick_duration / 3, Duration::from_millis(10));
                 let before_step = Instant::now();
-                let direction = strategy.step(&board);
+                let direction = strategy.step(&board, time_budget);
                 let step_duration = before_step.elapsed();
                 println!(
-                    "--- moving {} ({} ms calc, {} ms since last tick) ---\n",
+                    "--- moving {} ({} ms calc, {} ms budget, {} ms since last tick) ---\n",
                     direction,
                     step_duration.as_millis(),
+                    time_budget.as_millis(),
                     tick_duration.as_millis()
                 );
                 writer.write(&ClientMessage::Move { direction })?;
@@ -524,7 +531,7 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    let strategy = PlayoutAfterNextStrategy::new(1000, 50, 1);
+    let strategy = PlayoutAfterNextStrategy::new(50, 1);
     run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())
