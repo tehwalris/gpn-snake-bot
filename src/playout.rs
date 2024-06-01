@@ -1,20 +1,22 @@
 use crate::{board_tracker::BoardTracker, Strategy};
 
-struct PlayoutResult {
-    beaten_players: usize,
-    did_win: bool,
+pub struct PlayoutResult {
+    pub beaten_players: usize,
+    pub did_win: bool,
 }
 
-fn run_playout(
+pub fn run_playout(
     mut board: BoardTracker,
     mut strategies_by_player: Vec<Box<dyn Strategy>>,
     own_player_id: usize,
+    max_steps: usize,
 ) -> PlayoutResult {
-    assert!(board.is_dead(own_player_id));
+    assert!(!board.is_dead(own_player_id));
+    assert!(max_steps > 0);
 
     let (width, _height) = board.board_size();
 
-    loop {
+    for i_step in 0.. {
         let count_dead_before_turn = board.count_dead();
 
         let new_pos_by_player: Vec<Option<(usize, usize)>> = strategies_by_player
@@ -60,6 +62,14 @@ fn run_playout(
                 beaten_players: board.count_dead(),
                 did_win: true,
             };
+        } else if i_step + 1 >= max_steps {
+            assert!(i_step + 1 == max_steps);
+            return PlayoutResult {
+                beaten_players: board.count_dead(),
+                did_win: false,
+            };
         }
     }
+
+    panic!("step overflow")
 }

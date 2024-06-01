@@ -1,4 +1,4 @@
 {
   "nixEnvSelector.nixFile": "${workspaceRoot}/shell.nix",
-  "cSpell.words": ["playout"]
+  "cSpell.words": ["playout", "playouts"]
 }

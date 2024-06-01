@@ -11,8 +11,6 @@ pub struct BoardTracker {
     width: usize,
     height: usize,
     board: Vec<usize>,
-    // latest_pos_by_player: Vec<Option<(usize, usize)>>,
-    // dead_by_player: Vec<Option<bool>>,
     players: Vec<BoardTrackerPlayer>,
 }
 
@@ -59,6 +57,10 @@ impl BoardTracker {
 
     pub fn count_alive(&self) -> usize {
         self.players.iter().filter(|p| !p.dead).count()
+    }
+
+    pub fn count_seen(&self) -> usize {
+        self.players.len()
     }
 
     pub fn get_cell_player(&self, (x, y): (usize, usize)) -> Option<usize> {

@@ -7,6 +7,7 @@ use core::time;
 use direction::Direction;
 use distance::calculate_distances;
 use rand::prelude::SliceRandom;
+use std::time::Instant;
 use std::{
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
@@ -158,33 +159,25 @@ impl AlwaysDownStrategy {
 }
 
 impl Strategy for AlwaysDownStrategy {
-    fn start(&mut self, game_info: &GameInfo) -> () {}
+    fn start(&mut self, _game_info: &GameInfo) -> () {}
 
-    fn step(&mut self, board: &BoardTracker) -> Direction {
+    fn step(&mut self, _board: &BoardTracker) -> Direction {
         Direction::Down
     }
 }
 
 struct NoCrashRandomStrategy {
-    board: Option<board_tracker::BoardTracker>,
     player_id: usize,
 }
 
 impl NoCrashRandomStrategy {
     fn new() -> Self {
-        Self {
-            board: None,
-            player_id: 0,
-        }
+        Self { player_id: 0 }
     }
 }
 
 impl Strategy for NoCrashRandomStrategy {
     fn start(&mut self, game_info: &GameInfo) -> () {
-        self.board = Some(board_tracker::BoardTracker::new(
-            game_info.width as usize,
-            game_info.height as usize,
-        ));
         self.player_id = game_info.player_id as usize;
     }
 
@@ -206,31 +199,54 @@ impl Strategy for NoCrashRandomStrategy {
     }
 }
 
+struct ConstantThenOtherStrategy<T: Strategy> {
+    did_first_step: bool,
+    first_direction: Direction,
+    other_strategy: T,
+}
+
+impl<T: Strategy> ConstantThenOtherStrategy<T> {
+    fn new(first_direction: Direction, other_strategy: T) -> Self {
+        Self {
+            did_first_step: false,
+            first_direction,
+            other_strategy,
+        }
+    }
+}
+
+impl<T: Strategy> Strategy for ConstantThenOtherStrategy<T> {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        assert!(!self.did_first_step);
+        self.other_strategy.start(game_info);
+    }
+
+    fn step(&mut self, board: &BoardTracker) -> Direction {
+        if self.did_first_step {
+            self.other_strategy.step(board)
+        } else {
+            self.did_first_step = true;
+            self.first_direction
+        }
+    }
+}
+
 struct GetAwayFromItAllStrategy {
-    board: Option<board_tracker::BoardTracker>,
     player_id: usize,
 }
 
 impl GetAwayFromItAllStrategy {
     fn new() -> Self {
-        Self {
-            board: None,
-            player_id: 0,
-        }
+        Self { player_id: 0 }
     }
 }
 
 impl Strategy for GetAwayFromItAllStrategy {
     fn start(&mut self, game_info: &GameInfo) -> () {
-        self.board = Some(board_tracker::BoardTracker::new(
-            game_info.width as usize,
-            game_info.height as usize,
-        ));
         self.player_id = game_info.player_id as usize;
     }
 
     fn step(&mut self, board: &BoardTracker) -> Direction {
-        let board = self.board.as_mut().unwrap();
         let (width, _height) = board.board_size();
         let player_pos = board.get_player_latest_pos(self.player_id).unwrap();
 
@@ -288,6 +304,131 @@ impl Strategy for GetAwayFromItAllStrategy {
     }
 }
 
+struct PlayoutAfterNextStrategy {
+    player_id: usize,
+    n_playouts: usize,
+    max_steps: usize,
+    win_multiplier: usize,
+}
+
+impl PlayoutAfterNextStrategy {
+    fn new(n_playouts: usize, max_steps: usize, win_multiplier: usize) -> Self {
+        assert!(n_playouts > 0);
+        assert!(max_steps > 0);
+        assert!(win_multiplier > 0);
+        Self {
+            player_id: 0,
+            n_playouts,
+            max_steps,
+            win_multiplier,
+        }
+    }
+}
+
+impl Strategy for PlayoutAfterNextStrategy {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        self.player_id = game_info.player_id as usize;
+    }
+
+    fn step(&mut self, board: &BoardTracker) -> Direction {
+        let n_players = board.count_seen();
+        assert!(n_players > 0);
+        assert!(self.player_id < n_players);
+
+        let mut no_crash_directions: Vec<Direction> = Direction::all_directions()
+            .iter()
+            .filter(|&direction| {
+                let new_player_pos = board.offset_pos(
+                    board.get_player_latest_pos(self.player_id).unwrap(),
+                    *direction,
+                );
+                board.get_cell_player(new_player_pos).is_none()
+            })
+            .cloned()
+            .collect();
+        no_crash_directions.shuffle(&mut rand::thread_rng());
+
+        if no_crash_directions.is_empty() {
+            println!("WARNING unavoidable crash");
+            return Direction::Down;
+        }
+        if no_crash_directions.len() == 1 {
+            return no_crash_directions[0];
+        }
+
+        #[derive(Clone, Debug)]
+        struct DirectionStats {
+            direction: Direction,
+            score: usize,
+            playouts: usize,
+            mean_score: f64,
+        }
+        let mut stats_by_direction: Vec<_> = no_crash_directions
+            .iter()
+            .map(|&direction| DirectionStats {
+                direction,
+                score: 0,
+                playouts: 0,
+                mean_score: 0.0,
+            })
+            .collect();
+
+        for i_playout in 0..self.n_playouts {
+            let own_playout_start_direction =
+                no_crash_directions[i_playout % no_crash_directions.len()];
+
+            let strategies_by_player: Vec<_> = (0..n_players)
+                .map(|player_id| {
+                    let fake_game_info = GameInfo {
+                        width: 0,
+                        height: 0,
+                        player_id: player_id.try_into().unwrap(),
+                    };
+                    let base_strategy = NoCrashRandomStrategy::new();
+                    let mut strategy: Box<dyn Strategy> = if player_id == self.player_id {
+                        Box::new(ConstantThenOtherStrategy::new(
+                            own_playout_start_direction,
+                            base_strategy,
+                        ))
+                    } else {
+                        Box::new(base_strategy)
+                    };
+                    strategy.start(&fake_game_info);
+                    strategy
+                })
+                .collect();
+
+            let playout_result = playout::run_playout(
+                board.clone(),
+                strategies_by_player,
+                self.player_id,
+                self.max_steps,
+            );
+            let mut playout_score = playout_result.beaten_players;
+            if playout_result.did_win {
+                playout_score *= self.win_multiplier;
+            }
+
+            let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
+            stats.score += playout_score;
+            stats.playouts += 1;
+        }
+
+        for stats in stats_by_direction.iter_mut() {
+            if stats.playouts > 0 {
+                stats.mean_score = stats.score as f64 / stats.playouts as f64;
+            }
+            println!("{:?}", stats);
+        }
+        let best_direction = stats_by_direction
+            .iter()
+            .max_by(|a, b| a.mean_score.partial_cmp(&b.mean_score).unwrap())
+            .unwrap()
+            .direction;
+        best_direction
+    }
+}
+
 fn run_round<S: Strategy, R: Read, W: Write>(
     mut strategy: S,
     reader: &mut GameReader<R>,
@@ -322,8 +463,14 @@ fn run_round<S: Strategy, R: Read, W: Write>(
 
         match msg {
             ServerMessage::Tick => {
+                let before_step = Instant::now();
                 let direction = strategy.step(&board);
-                println!("moving {}", direction);
+                let step_duration = before_step.elapsed();
+                println!(
+                    "--- moving {} ({} ms) ---\n",
+                    direction,
+                    step_duration.as_millis()
+                );
                 writer.write(&ClientMessage::Move { direction })?;
             }
             ServerMessage::Game { .. } => (),
@@ -357,7 +504,8 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    run_round(GetAwayFromItAllStrategy::new(), &mut reader, &mut writer)?;
+    let strategy = PlayoutAfterNextStrategy::new(10, 10, 5);
+    run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())
 }
