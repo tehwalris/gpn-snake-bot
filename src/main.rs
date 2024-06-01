@@ -404,11 +404,11 @@ impl Strategy for PlayoutAfterNextStrategy {
                 self.player_id,
                 self.max_steps,
             );
-            // let mut playout_score = playout_result.beaten_players;
-            // if playout_result.did_win {
-            //     playout_score *= self.win_multiplier;
-            // }
-            let playout_score = playout_result.survived_steps;
+            let mut playout_score = playout_result.beaten_players;
+            if playout_result.did_win {
+                playout_score *= self.win_multiplier;
+            }
+            // let playout_score = playout_result.survived_steps;
 
             let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
             stats.score += playout_score;
