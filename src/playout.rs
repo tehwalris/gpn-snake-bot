@@ -2,8 +2,10 @@ use crate::{board_tracker::BoardTracker, Strategy};
 
 pub struct PlayoutResult {
     pub beaten_players: usize,
+    pub remaining_players: usize,
     pub survived_steps: usize,
     pub did_win: bool,
+    pub did_die: bool,
 }
 
 pub fn run_playout(
@@ -56,21 +58,27 @@ pub fn run_playout(
         if board.is_dead(own_player_id) {
             return PlayoutResult {
                 beaten_players: count_dead_before_turn,
+                remaining_players: board.count_alive(),
                 survived_steps: i_step,
                 did_win: false,
+                did_die: true,
             };
         } else if board.count_alive() == 1 {
             return PlayoutResult {
                 beaten_players: board.count_dead(),
+                remaining_players: board.count_alive(),
                 survived_steps: i_step + 1,
                 did_win: true,
+                did_die: false,
             };
         } else if i_step + 1 >= max_steps {
             assert!(i_step + 1 == max_steps);
             return PlayoutResult {
                 beaten_players: board.count_dead(),
+                remaining_players: board.count_alive(),
                 survived_steps: i_step + 1,
                 did_win: false,
+                did_die: false,
             };
         }
     }

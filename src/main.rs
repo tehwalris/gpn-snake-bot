@@ -359,7 +359,7 @@ impl Strategy for PlayoutAfterNextStrategy {
         #[derive(Clone, Debug)]
         struct DirectionStats {
             direction: Direction,
-            score: usize,
+            score: f64,
             playouts: usize,
             mean_score: f64,
         }
@@ -367,7 +367,7 @@ impl Strategy for PlayoutAfterNextStrategy {
             .iter()
             .map(|&direction| DirectionStats {
                 direction,
-                score: 0,
+                score: 0.0,
                 playouts: 0,
                 mean_score: 0.0,
             })
@@ -404,11 +404,19 @@ impl Strategy for PlayoutAfterNextStrategy {
                 self.player_id,
                 self.max_steps,
             );
-            let mut playout_score = playout_result.beaten_players;
-            if playout_result.did_win {
-                playout_score *= self.win_multiplier;
-            }
+            // let mut playout_score = playout_result.beaten_players;
+            // if playout_result.did_win {
+            //     playout_score *= self.win_multiplier;
+            // }
             // let playout_score = playout_result.survived_steps;
+            let playout_score: f64 = if playout_result.did_win {
+                1.0
+            } else if playout_result.did_die {
+                0.0
+            } else {
+                assert!(playout_result.remaining_players > 0);
+                1.0 / (playout_result.remaining_players as f64)
+            };
 
             let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
             stats.score += playout_score;
@@ -526,7 +534,7 @@ fn run_online() -> Result<()> {
             "restarting due to error: {:?}",
             try_play(host_port.clone(), username.clone(), password.clone(),),
         );
-        std::thread::sleep(time::Duration::from_millis(200));
+        std::thread::sleep(time::Duration::from_millis(50));
     }
 }
 
