@@ -574,7 +574,7 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
     let strategy = SeparateEarlyLateStrategy::new(
         PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurvivedSteps, 150, 1),
         PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::WinProbability, 50, 1),
-        0.33,
+        0.5,
     );
     run_round(strategy, &mut reader, &mut writer)?;
 
