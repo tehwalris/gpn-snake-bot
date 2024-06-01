@@ -305,18 +305,25 @@ impl Strategy for GetAwayFromItAllStrategy {
     }
 }
 
+enum PlayoutAfterNextStrategyMode {
+    WinProbability,
+    SurvivedSteps,
+}
+
 struct PlayoutAfterNextStrategy {
     player_id: usize,
+    mode: PlayoutAfterNextStrategyMode,
     max_steps: usize,
     win_multiplier: usize,
 }
 
 impl PlayoutAfterNextStrategy {
-    fn new(max_steps: usize, win_multiplier: usize) -> Self {
+    fn new(mode: PlayoutAfterNextStrategyMode, max_steps: usize, win_multiplier: usize) -> Self {
         assert!(max_steps > 0);
         assert!(win_multiplier > 0);
         Self {
             player_id: 0,
+            mode,
             max_steps,
             win_multiplier,
         }
@@ -408,23 +415,20 @@ impl Strategy for PlayoutAfterNextStrategy {
                 self.player_id,
                 self.max_steps,
             );
-            // let mut playout_score = playout_result.beaten_players;
-            // // if playout_result.did_win {
-            //     playout_score *= self.win_multiplier;
-            // }
 
-            // let playout_score = playout_result.survived_steps;
-
-            let playout_score: f64 = if playout_result.did_win {
-                1.0
-            } else if playout_result.did_die {
-                0.0
-            } else {
-                assert!(playout_result.remaining_players > 0);
-                1.0 / (playout_result.remaining_players as f64)
+            let playout_score = match self.mode {
+                PlayoutAfterNextStrategyMode::WinProbability => {
+                    if playout_result.did_win {
+                        1.0
+                    } else if playout_result.did_die {
+                        0.0
+                    } else {
+                        assert!(playout_result.remaining_players > 0);
+                        1.0 / (playout_result.remaining_players as f64)
+                    }
+                }
+                PlayoutAfterNextStrategyMode::SurvivedSteps => playout_result.survived_steps as f64,
             };
-
-            // let playout_score = (playout_result.beaten_players - board.count_dead()) as f64;
 
             let stats = &mut stats_by_direction[i_playout % no_crash_directions.len()];
             stats.score += playout_score;
@@ -443,6 +447,42 @@ impl Strategy for PlayoutAfterNextStrategy {
             .unwrap()
             .direction;
         best_direction
+    }
+}
+
+struct SeparateEarlyLateStrategy<A: Strategy, B: Strategy> {
+    early_strategy: A,
+    late_strategy: B,
+    switch_alive_ratio: f64,
+}
+
+impl<A: Strategy, B: Strategy> SeparateEarlyLateStrategy<A, B> {
+    fn new(early_strategy: A, late_strategy: B, switch_alive_ratio: f64) -> Self {
+        assert!(0.0 <= switch_alive_ratio && switch_alive_ratio <= 1.0);
+        Self {
+            early_strategy,
+            late_strategy,
+            switch_alive_ratio,
+        }
+    }
+}
+
+impl<A: Strategy, B: Strategy> Strategy for SeparateEarlyLateStrategy<A, B> {
+    fn start(&mut self, game_info: &GameInfo) -> () {
+        self.early_strategy.start(game_info);
+        self.late_strategy.start(game_info);
+    }
+
+    fn step(&mut self, board: &BoardTracker, time_budget: Duration) -> Direction {
+        let n_players = board.count_seen();
+        assert!(n_players > 0);
+
+        let alive_ratio = board.count_alive() as f64 / n_players as f64;
+        if alive_ratio < self.switch_alive_ratio {
+            self.late_strategy.step(board, time_budget)
+        } else {
+            self.early_strategy.step(board, time_budget)
+        }
     }
 }
 
@@ -531,7 +571,11 @@ fn try_play(host_port: String, username: String, password: String) -> Result<()>
 
     writer.write(&ClientMessage::Join { username, password })?;
 
-    let strategy = PlayoutAfterNextStrategy::new(50, 1);
+    let strategy = SeparateEarlyLateStrategy::new(
+        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::SurvivedSteps, 150, 1),
+        PlayoutAfterNextStrategy::new(PlayoutAfterNextStrategyMode::WinProbability, 50, 1),
+        0.33,
+    );
     run_round(strategy, &mut reader, &mut writer)?;
 
     Ok(())
